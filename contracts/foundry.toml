@@ -1,0 +1,29 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+via_ir = true
+
+remappings = [
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "@openzeppelin-upgradeable/=lib/openzeppelin-contracts-upgradeable/",
+    "forge-std/=lib/forge-std/src/",
+]
+
+[fuzz]
+runs = 256
+
+[invariant]
+runs = 128             # reduce from 256
+depth = 300            # reduce from ~500
+fail_on_revert = false # keep false since handler swallows errors intentionally
+
+[rpc_endpoints]
+sepolia = "${SEPOLIA_RPC_URL}"
+arbitrum-sepolia = "${ARBITRUM_SEPOLIA_RPC_URL}"
+aurora-test = "${AURORA_TEST_RPC_URL}"
+
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}", url = "${SEPOLIA_API}" }
+arbitrum-sepolia = { key = "${ARBISCAN_API_KEY}", url = "${ARBITRUM_SEPOLIA_API}" }
+aurora-test = { key = "QWERTY", url = "${AURORA_TEST_RPC_URL}" }
