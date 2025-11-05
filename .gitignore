@@ -1,0 +1,36 @@
+# -------------------------------
+# Root .gitignore for Collectibles-app
+# -------------------------------
+
+# Node (backend + frontend)
+node_modules/
+dist/
+build/
+.next/
+.out/
+*.log
+.env
+.env.local
+.env.development
+.env.production
+
+# TypeScript
+*.tsbuildinfo
+
+# Foundry (Solidity contracts)
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/.DS_Store
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Recursively ignore env files
+**/.env
+**/.env.local
+**/.env.development
+**/.env.production
