@@ -10,12 +10,6 @@ contract WireCollectibles is Script {
         return vm.envAddress(key);
     }
 
-    function _envAddressOrZero(string memory key) internal view returns (address) {
-        // read as bytes32 to allow "unset" without revert
-        bytes32 raw = vm.envOr(key, bytes32(0));
-        return address(uint160(uint256(raw)));
-    }
-
     function _envUintOr(string memory key, uint256 defval) internal view returns (uint256) {
         return vm.envOr(key, defval);
     }
@@ -23,21 +17,22 @@ contract WireCollectibles is Script {
     // best-effort call: returns true if succeeded
     function _try(address target, bytes memory data, string memory label) internal returns (bool ok) {
         (ok, ) = target.call(data);
-        console2.log(ok ? string.concat("OK: ", label) : string.concat("SKIP: ", label, " (no func / not owner / reverted)"));
+        console2.log(
+            ok
+                ? string.concat("OK: ", label)
+                : string.concat("SKIP: ", label, " (no func / not owner / reverted)")
+        );
     }
 
     function run() external {
-        // --- required (taken from your .env; the later Arbitrum values override Aurora) ---
+        // --- required addresses from .env ---
         address registry = _envAddress("COLLECTIBLE_REGISTRY_ADDRESS");
         address nft      = _envAddress("COLLECTIBLE_NFT_ADDRESS");
         address market   = _envAddress("COLLECTIBLE_MARKET_ADDRESS");
 
-        // --- payment token ---
-        address usdc = _envAddressOrZero("COLLECTIBLE_USDC6MOCK_ADDRESS");
-        
-        // fee config
+        // --- fee config for Market (optional override of default 200 bps) ---
         address feeTo  = _envAddress("DEV_WALLET1");
-        uint256 feeBps = _envUintOr("MARKET_FEE_BPS", 250);
+        uint256 feeBps = _envUintOr("MARKET_FEE_BPS", 250); // e.g. 2.5%
 
         vm.startBroadcast();
 
@@ -47,15 +42,11 @@ contract WireCollectibles is Script {
 
         // ---- NFT wiring ----
         _try(nft, abi.encodeWithSignature("setRegistry(address)", registry), "nft.setRegistry(registry)");
+        _try(nft, abi.encodeWithSignature("setMarketplace(address)", market), "nft.setMarketplace(market)");
 
         // ---- Market wiring ----
-        _try(market, abi.encodeWithSignature("setRegistry(address)", registry), "market.setRegistry(registry)");
-        _try(market, abi.encodeWithSignature("setNFT(address)", nft), "market.setNFT(nft)");
-        if (usdc != address(0)) {
-            _try(market, abi.encodeWithSignature("setPaymentToken(address)", usdc), "market.setPaymentToken(USDC)");
-        } else {
-            console2.log("SKIP: market.setPaymentToken - no USDC address provided");
-        }
+        // MarketV1 has no setRegistry / setNFT / setPaymentToken; payment token was set in initialize.
+        // You CAN update fees post-deploy:
         _try(market, abi.encodeWithSignature("setFeeConfig(address,uint256)", feeTo, feeBps), "market.setFeeConfig(addr,uint256)");
 
         vm.stopBroadcast();
@@ -64,7 +55,6 @@ contract WireCollectibles is Script {
         console2.log("REGISTRY:", registry);
         console2.log("NFT     :", nft);
         console2.log("MARKET  :", market);
-        console2.log("USDC    :", usdc);
         console2.log("FEE_TO  :", feeTo);
         console2.log("FEE_BPS :", feeBps);
     }
