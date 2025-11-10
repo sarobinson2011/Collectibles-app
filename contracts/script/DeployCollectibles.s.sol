@@ -40,9 +40,9 @@ contract DeployCollectiblesScript is Script {
     }
 
     function run() external {
-        address feeRecipient = vm.envAddress("DEV_WALLET1");
-        address usdc         = _envAddressOrZero("USDC_ADDRESS");
-        uint256 feeBps       = _envUintOrDefault("MARKET_FEE_BPS", 250); // 2.5%
+        // address feeRecipient = vm.envAddress("DEV_WALLET1");
+        // address usdc         = _envAddressOrZero("USDC_ADDRESS");
+        // uint256 feeBps       = _envUintOrDefault("MARKET_FEE_BPS", 250); // 2.5%
 
         vm.startBroadcast();
 
@@ -62,41 +62,41 @@ contract DeployCollectiblesScript is Script {
         // If these functions don't exist in your contracts, they will be skipped gracefully.
 
         // NFT <- Registry
-        _tryCall(address(nft),
-            abi.encodeWithSignature("setRegistry(address)", address(registry)),
-            "nft.setRegistry(registry)"
-        );
+        // _tryCall(address(nft),
+        //     abi.encodeWithSignature("setRegistry(address)", address(registry)),
+        //     "nft.setRegistry(registry)"
+        // );
 
-        // Market <- Registry
-        _tryCall(address(market),
-            abi.encodeWithSignature("setRegistry(address)", address(registry)),
-            "market.setRegistry(registry)"
-        );
+        // // Market <- Registry
+        // _tryCall(address(market),
+        //     abi.encodeWithSignature("setRegistry(address)", address(registry)),
+        //     "market.setRegistry(registry)"
+        // );
 
-        // Market <- NFT
-        _tryCall(address(market),
-            abi.encodeWithSignature("setNFT(address)", address(nft)),
-            "market.setNFT(nft)"
-        );
+        // // Market <- NFT
+        // _tryCall(address(market),
+        //     abi.encodeWithSignature("setNFT(address)", address(nft)),
+        //     "market.setNFT(nft)"
+        // );
 
-        // Market <- Payment token (USDC) (only if provided)
-        if (usdc != address(0)) {
-            _tryCall(address(market),
-                abi.encodeWithSignature("setPaymentToken(address)", usdc),
-                "market.setPaymentToken(USDC)"
-            );
-        }
+        // // Market <- Payment token (USDC) (only if provided)
+        // if (usdc != address(0)) {
+        //     _tryCall(address(market),
+        //         abi.encodeWithSignature("setPaymentToken(address)", usdc),
+        //         "market.setPaymentToken(USDC)"
+        //     );
+        // }
 
-        // Fee config: try (address,uint96) then (address,uint256)
-        if (!_tryCall(address(market),
-            abi.encodeWithSignature("setFeeConfig(address,uint96)", feeRecipient, uint96(feeBps)),
-            "market.setFeeConfig(recipient,uint96)"))
-        {
-            _tryCall(address(market),
-                abi.encodeWithSignature("setFeeConfig(address,uint256)", feeRecipient, feeBps),
-                "market.setFeeConfig(recipient,uint256)"
-            );
-        }
+        // // Fee config: try (address,uint96) then (address,uint256)
+        // if (!_tryCall(address(market),
+        //     abi.encodeWithSignature("setFeeConfig(address,uint96)", feeRecipient, uint96(feeBps)),
+        //     "market.setFeeConfig(recipient,uint96)"))
+        // {
+        //     _tryCall(address(market),
+        //         abi.encodeWithSignature("setFeeConfig(address,uint256)", feeRecipient, feeBps),
+        //         "market.setFeeConfig(recipient,uint256)"
+        //     );
+        // }
 
         vm.stopBroadcast();
 
