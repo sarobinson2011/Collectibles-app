@@ -44,6 +44,26 @@ CREATE TABLE IF NOT EXISTS collectibles (
     last_update_block INTEGER NOT NULL,
     last_update_tx TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract TEXT NOT NULL,             -- registry | nft | market
+    event_name TEXT NOT NULL,           -- CollectibleListed, ...
+    nft TEXT,
+    token_id TEXT,
+    rfid_hash TEXT,
+    seller TEXT,
+    buyer TEXT,
+    owner TEXT,
+    price TEXT,
+    block INTEGER NOT NULL,
+    tx TEXT NOT NULL,
+    log_index INTEGER NOT NULL,
+    created_at INTEGER NOT NULL        -- ms since epoch
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_addr ON events (seller, buyer, owner);
+CREATE INDEX IF NOT EXISTS idx_events_block ON events (block, log_index);
 `);
 
 // ----------------------
@@ -75,6 +95,23 @@ export type CollectibleLike = {
     lastUpdateTx: string;
 };
 
+// Event record used for activity
+export type ActivityEvent = {
+    contract: "registry" | "nft" | "market";
+    eventName: string;
+    nft?: string;
+    tokenId?: string;
+    rfidHash?: string;
+    seller?: string;
+    buyer?: string;
+    owner?: string;
+    price?: string;
+    block: number;
+    tx: string;
+    logIndex: number;
+    createdAt: number;
+};
+
 // Row types as stored in SQLite
 
 type ListingRow = {
@@ -100,6 +137,23 @@ type CollectibleRow = {
     last_event: string;
     last_update_block: number;
     last_update_tx: string;
+};
+
+type EventRow = {
+    id: number;
+    contract: string;
+    event_name: string;
+    nft: string | null;
+    token_id: string | null;
+    rfid_hash: string | null;
+    seller: string | null;
+    buyer: string | null;
+    owner: string | null;
+    price: string | null;
+    block: number;
+    tx: string;
+    log_index: number;
+    created_at: number;
 };
 
 // ----------------------
@@ -168,6 +222,38 @@ export function upsertCollectibleDb(c: CollectibleLike): void {
         last_event: c.lastEvent,
         last_update_block: c.lastUpdateBlock,
         last_update_tx: c.lastUpdateTx,
+    });
+}
+
+// ---- Events table helpers ----
+
+const insertEventStmt = db.prepare(`
+INSERT INTO events (
+    contract, event_name, nft, token_id, rfid_hash,
+    seller, buyer, owner, price,
+    block, tx, log_index, created_at
+) VALUES (
+    @contract, @event_name, @nft, @token_id, @rfid_hash,
+    @seller, @buyer, @owner, @price,
+    @block, @tx, @log_index, @created_at
+);
+`);
+
+export function insertEventDb(ev: ActivityEvent): void {
+    insertEventStmt.run({
+        contract: ev.contract,
+        event_name: ev.eventName,
+        nft: ev.nft ?? null,
+        token_id: ev.tokenId ?? null,
+        rfid_hash: ev.rfidHash ?? null,
+        seller: ev.seller ?? null,
+        buyer: ev.buyer ?? null,
+        owner: ev.owner ?? null,
+        price: ev.price ?? null,
+        block: ev.block,
+        tx: ev.tx,
+        log_index: ev.logIndex,
+        created_at: ev.createdAt,
     });
 }
 
@@ -271,5 +357,40 @@ export function getCollectiblesByOwnerDb(owner: string): CollectibleLike[] {
         }
 
         return c;
+    });
+}
+
+// Activity for a given address
+const selectActivityByAddressStmt = db.prepare(`
+SELECT *
+FROM events
+WHERE LOWER(COALESCE(seller, '')) = LOWER(@addr)
+   OR LOWER(COALESCE(buyer, '')) = LOWER(@addr)
+   OR LOWER(COALESCE(owner, '')) = LOWER(@addr)
+ORDER BY block DESC, log_index DESC, id DESC;
+`);
+
+export function getActivityByAddressDb(addr: string): ActivityEvent[] {
+    const rows = selectActivityByAddressStmt.all({ addr }) as EventRow[];
+
+    return rows.map((r) => {
+        const ev: ActivityEvent = {
+            contract: r.contract as "registry" | "nft" | "market",
+            eventName: r.event_name,
+            block: r.block,
+            tx: r.tx,
+            logIndex: r.log_index,
+            createdAt: r.created_at,
+        };
+
+        if (r.nft !== null) ev.nft = r.nft;
+        if (r.token_id !== null) ev.tokenId = r.token_id;
+        if (r.rfid_hash !== null) ev.rfidHash = r.rfid_hash;
+        if (r.seller !== null) ev.seller = r.seller;
+        if (r.buyer !== null) ev.buyer = r.buyer;
+        if (r.owner !== null) ev.owner = r.owner;
+        if (r.price !== null) ev.price = r.price;
+
+        return ev;
     });
 }

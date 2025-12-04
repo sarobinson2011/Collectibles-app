@@ -28,13 +28,28 @@ export type Collectible = {
     lastUpdateTx: string;
 };
 
+export type ActivityEvent = {
+    contract: "registry" | "nft" | "market";
+    eventName: string;
+    nft?: string;
+    tokenId?: string;
+    rfidHash?: string;
+    seller?: string;
+    buyer?: string;
+    owner?: string;
+    price?: string;
+    block: number;
+    tx: string;
+    logIndex: number;
+    createdAt: number;
+};
+
 /**
  * Basic helper to GET JSON from the backend.
  */
 async function getJSON<T>(path: string): Promise<T> {
     const res = await fetch(`${API_BASE_URL}${path}`);
     if (!res.ok) {
-        // You can make this nicer (logging, custom errors, etc.)
         throw new Error(`API ${path} failed with ${res.status}`);
     }
     return res.json() as Promise<T>;
@@ -71,8 +86,19 @@ type OwnerCollectiblesResponse = {
 export async function fetchCollectiblesByOwner(
     owner: string,
 ): Promise<OwnerCollectiblesResponse> {
-    const data = await getJSON<OwnerCollectiblesResponse>(
-        `/owner/${owner}`,
-    );
+    const data = await getJSON<OwnerCollectiblesResponse>(`/owner/${owner}`);
+    return data;
+}
+
+type ActivityResponse = {
+    owner: string;
+    count: number;
+    events: ActivityEvent[];
+};
+
+export async function fetchActivity(
+    owner: string,
+): Promise<ActivityResponse> {
+    const data = await getJSON<ActivityResponse>(`/activity/${owner}`);
     return data;
 }

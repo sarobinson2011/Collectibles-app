@@ -1,5 +1,12 @@
 // src/domain/state.ts
 
+import {
+    upsertListingDb,
+    upsertCollectibleDb,
+    insertEventDb,
+    type ActivityEvent,
+} from "../infra/db.js";
+
 // ------------------------
 // Common indexed event type
 // ------------------------
@@ -35,17 +42,6 @@ const listings = new Map<string, Listing>(); // key: `${nft.toLowerCase()}:${tok
 function listingKey(nft: string, tokenId: string | number | bigint): string {
     return `${nft.toLowerCase()}:${tokenId.toString()}`;
 }
-
-// NEW — SQLite persistence
-import {
-    upsertListingDb,
-    upsertCollectibleDb,
-} from "../infra/db.js";
-
-
-// ------------------------
-// Public getters (in-memory)
-// ------------------------
 
 export function getActiveListings(): Listing[] {
     return Array.from(listings.values()).filter((l) => l.active);
@@ -102,10 +98,9 @@ export function getAllCollectibles(): Collectible[] {
 export function getCollectiblesByOwner(owner: string): Collectible[] {
     const needle = owner.toLowerCase();
     return getAllCollectibles().filter(
-        (c) => c.owner && c.owner.toLowerCase() === needle
+        (c) => c.owner && c.owner.toLowerCase() === needle,
     );
 }
-
 
 // ------------------------
 // applyEventToState()
@@ -117,7 +112,6 @@ export function applyEventToState(ev: IndexedEvent): void {
 
     // -------- MARKET EVENTS --------
     if (ev.contract === "market") {
-
         if (e === "CollectibleListed") {
             const nft = String(a[0]);
             const tokenId = a[1].toString();
@@ -138,7 +132,21 @@ export function applyEventToState(ev: IndexedEvent): void {
             };
 
             listings.set(key, listing);
-            upsertListingDb(listing);   // <-- SQLite sync
+            upsertListingDb(listing);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                nft,
+                tokenId,
+                seller,
+                price,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
@@ -156,7 +164,21 @@ export function applyEventToState(ev: IndexedEvent): void {
             existing.lastUpdateBlock = ev.block;
             existing.lastUpdateTx = ev.tx;
 
-            upsertListingDb(existing);  // <-- SQLite sync
+            upsertListingDb(existing);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                nft,
+                tokenId,
+                seller: existing.seller,
+                price: newPrice,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
@@ -173,7 +195,20 @@ export function applyEventToState(ev: IndexedEvent): void {
             existing.lastUpdateBlock = ev.block;
             existing.lastUpdateTx = ev.tx;
 
-            upsertListingDb(existing);  // <-- SQLite sync
+            upsertListingDb(existing);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                nft,
+                tokenId,
+                seller: existing.seller,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
@@ -207,17 +242,30 @@ export function applyEventToState(ev: IndexedEvent): void {
             existing.lastUpdateTx = ev.tx;
 
             listings.set(key, existing);
-            upsertListingDb(existing);  // <-- SQLite sync
+            upsertListingDb(existing);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                nft,
+                tokenId,
+                seller,
+                buyer,
+                price,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
         return;
     }
 
-
     // -------- REGISTRY EVENTS --------
     if (ev.contract === "registry") {
-
         if (e === "CollectibleRegistered") {
             const rfidHash = String(a[0]);
             const initialOwner = String(a[1]);
@@ -231,12 +279,25 @@ export function applyEventToState(ev: IndexedEvent): void {
             c.redeemed = false;
             c.burned = false;
 
-            upsertCollectibleDb(c);     // <-- SQLite sync
+            upsertCollectibleDb(c);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                rfidHash,
+                owner: initialOwner,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
         if (e === "CollectibleOwnershipTransferred") {
             const rfidHash = String(a[0]);
+            const _oldOwner = String(a[1]);
             const newOwner = String(a[2]);
             const rfid = String(a[3]);
 
@@ -244,7 +305,19 @@ export function applyEventToState(ev: IndexedEvent): void {
             c.rfid = rfid;
             c.owner = newOwner;
 
-            upsertCollectibleDb(c);     // <-- SQLite sync
+            upsertCollectibleDb(c);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                rfidHash,
+                owner: newOwner,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
@@ -256,17 +329,30 @@ export function applyEventToState(ev: IndexedEvent): void {
             c.rfid = rfid;
             c.redeemed = true;
 
-            upsertCollectibleDb(c);     // <-- SQLite sync
+            upsertCollectibleDb(c);
+
+            // Build activity without owner first, then conditionally add owner
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                rfidHash,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            if (c.owner) {
+                activity.owner = c.owner;
+            }
+            insertEventDb(activity);
             return;
         }
 
         return;
     }
 
-
     // -------- NFT EVENTS --------
     if (ev.contract === "nft") {
-
         if (e === "RFIDLinked") {
             const rfidHash = String(a[0]);
             const tokenId = a[1].toString();
@@ -281,7 +367,20 @@ export function applyEventToState(ev: IndexedEvent): void {
             c.tokenId = tokenId;
             c.owner = owner;
 
-            upsertCollectibleDb(c);     // <-- SQLite sync
+            upsertCollectibleDb(c);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                rfidHash,
+                tokenId,
+                owner,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
@@ -290,13 +389,39 @@ export function applyEventToState(ev: IndexedEvent): void {
             const owner = String(a[1]);
 
             const rfidHashKey = tokenIdToRfidHash.get(tokenId);
-            if (!rfidHashKey) return;
+            if (!rfidHashKey) {
+                const activity: ActivityEvent = {
+                    contract: ev.contract,
+                    eventName: e,
+                    tokenId,
+                    owner,
+                    block: ev.block,
+                    tx: ev.tx,
+                    logIndex: ev.logIndex,
+                    createdAt: ev.t,
+                };
+                insertEventDb(activity);
+                return;
+            }
 
             const c = getOrInitCollectible(rfidHashKey, ev);
             c.tokenId = tokenId;
             c.owner = owner;
 
-            upsertCollectibleDb(c);        // <-- SQLite sync
+            upsertCollectibleDb(c);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                rfidHash: rfidHashKey,
+                tokenId,
+                owner,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
@@ -310,12 +435,25 @@ export function applyEventToState(ev: IndexedEvent): void {
             c.owner = owner;
             c.burned = true;
 
-            upsertCollectibleDb(c);        // <-- SQLite sync
+            upsertCollectibleDb(c);
+
+            const activity: ActivityEvent = {
+                contract: ev.contract,
+                eventName: e,
+                rfidHash,
+                tokenId,
+                owner,
+                block: ev.block,
+                tx: ev.tx,
+                logIndex: ev.logIndex,
+                createdAt: ev.t,
+            };
+            insertEventDb(activity);
             return;
         }
 
         return;
     }
 
-    // Ignored event types
+    // ignore anything else
 }

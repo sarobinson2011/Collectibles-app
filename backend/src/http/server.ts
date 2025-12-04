@@ -7,10 +7,11 @@ import fs from "fs/promises";
 import { env } from "../config/env.js";
 import { logger } from "../infra/logger.js";
 import {
-    getActiveListings,
-    getAllCollectibles,
-    getCollectiblesByOwner,
-} from "../domain/state.js";
+    getActiveListingsDb,
+    getAllCollectiblesDb,
+    getCollectiblesByOwnerDb,
+    getActivityByAddressDb,
+} from "../infra/db.js";
 
 type ContractName = "registry" | "nft" | "market" | "all";
 
@@ -111,11 +112,11 @@ export function startHttpServer(): void {
 
     /**
      * GET /listings
-     * Returns all currently-active marketplace listings from in-memory state.
+     * Returns all currently-active marketplace listings from SQLite.
      */
     app.get("/listings", (_req: Request, res: Response) => {
         try {
-            const listings = getActiveListings();
+            const listings = getActiveListingsDb();
             res.json({
                 count: listings.length,
                 listings,
@@ -128,11 +129,11 @@ export function startHttpServer(): void {
 
     /**
      * GET /collectibles
-     * Returns all collectibles (burned / redeemed included; flags in each object).
+     * Returns all collectibles (burned / redeemed included; flags in each object) from SQLite.
      */
     app.get("/collectibles", (_req: Request, res: Response) => {
         try {
-            const collectibles = getAllCollectibles();
+            const collectibles = getAllCollectiblesDb();
             res.json({
                 count: collectibles.length,
                 collectibles,
@@ -154,7 +155,7 @@ export function startHttpServer(): void {
                 res.status(400).json({ error: "address param is required" });
                 return;
             }
-            const collectibles = getCollectiblesByOwner(addr);
+            const collectibles = getCollectiblesByOwnerDb(addr);
             res.json({
                 owner: addr,
                 count: collectibles.length,
@@ -162,6 +163,30 @@ export function startHttpServer(): void {
             });
         } catch (err) {
             logger.error(err, "GET /owner/:address failed");
+            res.status(500).json({ error: "Internal server error" });
+        }
+    });
+
+    /**
+     * GET /activity/:address
+     * Returns all events where the address is seller, buyer, or owner.
+     */
+    app.get("/activity/:address", (req: Request, res: Response) => {
+        try {
+            const addr = (req.params.address || "").trim();
+            if (!addr) {
+                res.status(400).json({ error: "address param is required" });
+                return;
+            }
+
+            const events = getActivityByAddressDb(addr);
+            res.json({
+                owner: addr,
+                count: events.length,
+                events,
+            });
+        } catch (err) {
+            logger.error(err, "GET /activity/:address failed");
             res.status(500).json({ error: "Internal server error" });
         }
     });
