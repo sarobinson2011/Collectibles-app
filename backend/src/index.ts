@@ -122,7 +122,7 @@ async function handleLog(log: Log) {
                 logIndex: log.index,
             };
 
-            // Update in-memory state (listings + collectibles)
+            // Update in-memory state (and via that, SQLite)
             applyEventToState(record as IndexedEvent);
 
             ctx.append(record);
@@ -177,7 +177,6 @@ async function bootstrapStateFromLogs(): Promise<void> {
         for (const line of lines) {
             try {
                 const obj = JSON.parse(line) as IndexedEvent;
-                // only care about known contracts; ignore any raw/unexpected shape
                 if (
                     obj &&
                     (obj.contract === "registry" ||
@@ -205,13 +204,13 @@ async function bootstrapStateFromLogs(): Promise<void> {
 async function main() {
     logger.info({ env }, "Backend starting");
 
-    // Rebuild in-memory state from historical logs (if present)
+    // 1) Rebuild in-memory + SQLite state from historical logs
     await bootstrapStateFromLogs();
 
-    // Start HTTP API
+    // 2) Start HTTP API (should keep running even if RPC is flaky)
     startHttpServer();
 
-    // Single logs subscription for all three addresses
+    // 3) Attach WS listener for live events
     const filter: Filter = {
         address: [env.REGISTRY_ADDRESS, env.NFT_ADDRESS, env.MARKET_ADDRESS],
     };
@@ -220,15 +219,23 @@ async function main() {
         void handleLog(log);
     });
 
-    // WS resilience
+    // WS resilience: log on close instead of killing the process
     // @ts-expect-error _ws is not typed by ethers; present in Node runtime
     ws._ws?.addEventListener?.("close", () => {
-        logger.warn("WS closed. Exiting for restart.");
-        process.exit(1);
+        logger.warn("WS closed. Live event listening stopped, HTTP server still running.");
+        // If you want to implement reconnect logic later, you can do it here.
     });
 
-    const latest = await http.getBlockNumber();
-    logger.info({ latest }, "Listeners attached");
+    // 4) Try to log the latest block, but DO NOT crash if RPC is down
+    try {
+        const latest = await http.getBlockNumber();
+        logger.info({ latest }, "Listeners attached (HTTP RPC OK)");
+    } catch (err) {
+        logger.error(err, "Failed to query latest block via HTTP RPC");
+        logger.warn(
+            "Continuing without HTTP chain height; WS events and HTTP API will still run.",
+        );
+    }
 }
 
 main().catch((e) => {

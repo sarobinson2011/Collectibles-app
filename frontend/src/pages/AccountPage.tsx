@@ -7,7 +7,7 @@ import { fetchListings } from "../api";
 import type { Collectible, Listing } from "../api";
 import { useWallet } from "../eth/wallet";
 import { useSignerContracts } from "../eth/contracts";
-import { NFT_ADDRESS } from "../eth/config";
+import { NFT_ADDRESS, REGISTRY_ADDRESS } from "../eth/config";
 
 export function AccountPage() {
     const { address, hasProvider, wrongNetwork } = useWallet();
@@ -63,28 +63,68 @@ export function AccountPage() {
 
     async function handleTransfer(c: Collectible) {
         try {
+            if (!hasProvider) {
+                throw new Error("No injected wallet found.");
+            }
+            if (!address) {
+                throw new Error("No wallet connected.");
+            }
+            if (wrongNetwork) {
+                throw new Error("Wrong network selected in wallet.");
+            }
+
             if (!c.rfid) {
                 alert("Missing RFID for this collectible; cannot transfer.");
+                return;
+            }
+            if (!c.tokenId) {
+                alert("Missing tokenId for this collectible; cannot transfer.");
                 return;
             }
 
             const newOwner = window.prompt("Enter the new owner address (0x...):");
             if (!newOwner) return;
 
+            const nft = await getNft();
             const registry = await getRegistryWithSigner();
+            const tokenId = BigInt(c.tokenId);
 
+            // Optional sanity check: ensure on-chain owner matches the connected wallet
+            // const onChainOwner = await nft.ownerOf(tokenId);
+            // if (onChainOwner.toLowerCase() !== address.toLowerCase()) {
+            //     alert("You are not the current on-chain owner of this NFT.");
+            //     return;
+            // }
+
+            // 1) Approve the registry to move this token
+            const approveTx = await nft.approve(REGISTRY_ADDRESS, tokenId);
+            alert(`Approve tx sent: ${approveTx.hash}`);
+            await approveTx.wait();
+            alert("Approve confirmed.");
+
+            // 2) Call registry to perform the off-market transfer
             const tx = await registry.transferCollectibleOwnership(c.rfid, newOwner);
             alert(`Transfer tx sent: ${tx.hash}`);
             await tx.wait();
             alert("Transfer confirmed on-chain.");
         } catch (err: any) {
             console.error(err);
-            alert(`Transfer failed: ${err?.message ?? String(err)}`);
+            alert(`Transfer failed: ${err?.reason ?? err?.message ?? String(err)}`);
         }
     }
 
     async function handleRedeem(c: Collectible) {
         try {
+            if (!hasProvider) {
+                throw new Error("No injected wallet found.");
+            }
+            if (!address) {
+                throw new Error("No wallet connected.");
+            }
+            if (wrongNetwork) {
+                throw new Error("Wrong network selected in wallet.");
+            }
+
             if (!c.rfid) {
                 alert("Missing RFID for this collectible; cannot redeem.");
                 return;
@@ -103,12 +143,22 @@ export function AccountPage() {
             alert("Redeem confirmed on-chain.");
         } catch (err: any) {
             console.error(err);
-            alert(`Redeem failed: ${err?.message ?? String(err)}`);
+            alert(`Redeem failed: ${err?.reason ?? err?.message ?? String(err)}`);
         }
     }
 
     async function handleList(c: Collectible) {
         try {
+            if (!hasProvider) {
+                throw new Error("No injected wallet found.");
+            }
+            if (!address) {
+                throw new Error("No wallet connected.");
+            }
+            if (wrongNetwork) {
+                throw new Error("Wrong network selected in wallet.");
+            }
+
             if (!c.tokenId) {
                 alert("Missing tokenId for this collectible; cannot list.");
                 return;
@@ -155,7 +205,7 @@ export function AccountPage() {
             });
         } catch (err: any) {
             console.error(err);
-            alert(`Listing failed: ${err?.message ?? String(err)}`);
+            alert(`Listing failed: ${err?.reason ?? err?.message ?? String(err)}`);
         }
     }
 
@@ -284,7 +334,8 @@ export function AccountPage() {
                     }}
                 >
                     Note: For listing to succeed, you must own the token and the
-                    marketplace contract will be approved to transfer it. Price is
+                    marketplace contract will be approved to transfer it. For off-market
+                    transfers, the registry will be approved to transfer the NFT. Price is
                     interpreted with 6 decimals (USDC-style). Once listed, the row will
                     show &quot;Listed: Yes&quot;.
                 </p>

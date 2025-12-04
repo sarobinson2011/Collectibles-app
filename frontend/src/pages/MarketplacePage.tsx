@@ -1,8 +1,8 @@
 // src/pages/MarketplacePage.tsx
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import type React from "react";
-import { parseUnits } from "ethers";
+import { parseUnits, formatUnits } from "ethers";
 import { fetchListings } from "../api";
 import type { Listing } from "../api";
 import { useWallet } from "../eth/wallet";
@@ -24,6 +24,37 @@ function shortenAddress(addr?: string, chars = 4) {
     return `${prefix}…${suffix}`;
 }
 
+function friendlyErrorMessage(err: any): string {
+    const raw = (
+        err?.reason ??
+        err?.shortMessage ??
+        err?.message ??
+        String(err)
+    ).toLowerCase();
+
+    if (raw.includes("user rejected") || raw.includes("user denied")) {
+        return "You rejected the transaction in your wallet.";
+    }
+
+    if (raw.includes("not listed")) {
+        return "This listing is no longer active – it was probably cancelled or already sold.";
+    }
+
+    if (raw.includes("owner changed")) {
+        return "The NFT owner changed, so this listing is no longer valid.";
+    }
+
+    if (raw.includes("insufficient balance")) {
+        return "You don’t have enough USDC to complete this purchase.";
+    }
+
+    if (raw.includes("insufficient allowance")) {
+        return "You need to approve more USDC before buying this listing.";
+    }
+
+    return "Transaction failed. Please check your wallet or try again.";
+}
+
 export function MarketplacePage() {
     const [state, setState] = useState<ListingsState>({
         status: "idle",
@@ -32,31 +63,42 @@ export function MarketplacePage() {
     });
 
     const { address, hasProvider, wrongNetwork } = useWallet();
-    const { getNft, getMarket } = useSignerContracts();
+    const { getNft, getMarket, getUsdc } = useSignerContracts();
 
     // Simple listing form
     const [tokenIdInput, setTokenIdInput] = useState("");
     const [priceInput, setPriceInput] = useState(""); // human-readable, e.g. "1.0"
     const [submitting, setSubmitting] = useState(false);
 
-    // Load listings from backend
+    // Track which listing is currently being bought (to disable its button)
+    const [buyingKey, setBuyingKey] = useState<string | null>(null);
+
+    // Track which listing is being cancelled / amended
+    const [cancelingKey, setCancelingKey] = useState<string | null>(null);
+    const [amendingKey, setAmendingKey] = useState<string | null>(null);
+
+    // Centralized reload for listings (used by both polling + post-tx refresh)
+    const reloadListings = useCallback(async () => {
+        setState((prev) => ({ ...prev, status: "loading", error: null }));
+        try {
+            const listings = await fetchListings();
+            setState({ status: "success", data: listings, error: null });
+        } catch (err: any) {
+            setState({
+                status: "error",
+                data: [],
+                error: err?.message ?? "Failed to load listings",
+            });
+        }
+    }, []);
+
+    // Load listings from backend + poll
     useEffect(() => {
         let cancelled = false;
 
         async function load() {
-            setState((prev) => ({ ...prev, status: "loading", error: null }));
-            try {
-                const listings = await fetchListings();
-                if (cancelled) return;
-                setState({ status: "success", data: listings, error: null });
-            } catch (err: any) {
-                if (cancelled) return;
-                setState({
-                    status: "error",
-                    data: [],
-                    error: err?.message ?? "Failed to load listings",
-                });
-            }
+            if (cancelled) return;
+            await reloadListings();
         }
 
         void load();
@@ -65,7 +107,7 @@ export function MarketplacePage() {
             cancelled = true;
             clearInterval(interval);
         };
-    }, []);
+    }, [reloadListings]);
 
     async function handleListSubmit(e: React.FormEvent<HTMLFormElement>) {
         e.preventDefault();
@@ -111,14 +153,145 @@ export function MarketplacePage() {
             await listTx.wait();
             alert("Listing confirmed.");
 
-            // Optional: clear form
+            // Clear form
             setTokenIdInput("");
             setPriceInput("");
+
+            // Refresh listings immediately
+            await reloadListings();
         } catch (err: any) {
             console.error(err);
-            alert(`Listing failed: ${err?.message ?? String(err)}`);
+            alert(friendlyErrorMessage(err));
         } finally {
             setSubmitting(false);
+        }
+    }
+
+    async function handleBuy(l: Listing) {
+        const key = `${l.nft.toLowerCase()}:${l.tokenId}`;
+        setBuyingKey(key);
+
+        try {
+            if (!hasProvider) {
+                throw new Error("No injected wallet found.");
+            }
+            if (!address) {
+                throw new Error("No wallet connected.");
+            }
+            if (wrongNetwork) {
+                throw new Error("Wrong network selected in wallet.");
+            }
+
+            const market = await getMarket();
+            const usdc = await getUsdc();
+
+            const tokenId = BigInt(l.tokenId);
+            const priceRaw = BigInt(l.price); // already stored as 6-decimals raw integer
+
+            // 1) Approve USDC spending for this price
+            const approveTx = await usdc.approve(market.target, priceRaw);
+            alert(`USDC approve tx sent: ${approveTx.hash}`);
+            await approveTx.wait();
+            alert("USDC approve confirmed.");
+
+            // 2) Purchase the collectible
+            const buyTx = await market.purchaseCollectible(NFT_ADDRESS, tokenId);
+            alert(`Purchase tx sent: ${buyTx.hash}`);
+            await buyTx.wait();
+            alert("Purchase confirmed.");
+
+            // Refresh listings immediately
+            await reloadListings();
+        } catch (err: any) {
+            console.error(err);
+            alert(friendlyErrorMessage(err));
+        } finally {
+            setBuyingKey((prev) => (prev === key ? null : prev));
+        }
+    }
+
+    async function handleCancel(l: Listing) {
+        const key = `${l.nft.toLowerCase()}:${l.tokenId}:${l.lastUpdateTx}`;
+        setCancelingKey(key);
+
+        try {
+            if (!hasProvider) {
+                throw new Error("No injected wallet found.");
+            }
+            if (!address) {
+                throw new Error("No wallet connected.");
+            }
+            if (wrongNetwork) {
+                throw new Error("Wrong network selected in wallet.");
+            }
+
+            const market = await getMarket();
+            const tokenId = BigInt(l.tokenId);
+
+            const tx = await market.cancelListing(NFT_ADDRESS, tokenId);
+            alert(`Cancel tx sent: ${tx.hash}`);
+            await tx.wait();
+            alert("Listing cancelled.");
+
+            // Refresh listings immediately
+            await reloadListings();
+        } catch (err: any) {
+            console.error(err);
+            alert(friendlyErrorMessage(err));
+        } finally {
+            setCancelingKey((prev) => (prev === key ? null : prev));
+        }
+    }
+
+    async function handleAmend(l: Listing) {
+        // Ask for new price *before* we mark anything as "amending"
+        const newPriceStr = window.prompt(
+            "Enter new price in USDC (e.g. 10.5):",
+            ""
+        );
+
+        if (newPriceStr === null || newPriceStr.trim() === "") {
+            // user cancelled or left empty – do nothing
+            return;
+        }
+
+        let newPriceRaw: bigint;
+        try {
+            newPriceRaw = parseUnits(newPriceStr.trim(), 6); // USDC 6 decimals
+        } catch {
+            alert("Invalid price format.");
+            return;
+        }
+
+        const key = `${l.nft.toLowerCase()}:${l.tokenId}:${l.lastUpdateTx}`;
+        setAmendingKey(key);
+
+        try {
+            if (!hasProvider) {
+                throw new Error("No injected wallet found.");
+            }
+            if (!address) {
+                throw new Error("No wallet connected.");
+            }
+            if (wrongNetwork) {
+                throw new Error("Wrong network selected in wallet.");
+            }
+
+            const market = await getMarket();
+            const tokenId = BigInt(l.tokenId);
+
+            const tx = await market.amendListing(NFT_ADDRESS, tokenId, newPriceRaw);
+            alert(`Amend tx sent: ${tx.hash}`);
+            await tx.wait();
+            alert("Listing price updated.");
+
+            // Refresh listings immediately
+            await reloadListings();
+        } catch (err: any) {
+            console.error(err);
+            alert(friendlyErrorMessage(err));
+        } finally {
+            setAmendingKey((prev) => (prev === key ? null : prev));
         }
     }
 
@@ -127,7 +300,7 @@ export function MarketplacePage() {
             <h2>Marketplace</h2>
             <p>
                 Shows active listings indexed by the backend. You can also list one of
-                your NFTs for sale by tokenId.
+                your NFTs for sale by tokenId, or buy listed collectibles with mock USDC.
             </p>
 
             {/* Listing form */}
@@ -150,8 +323,7 @@ export function MarketplacePage() {
                 )}
                 {hasProvider && address && wrongNetwork && (
                     <p style={{ color: "#f97373" }}>
-                        Wrong network selected in wallet. Please switch to Arbitrum
-                        Sepolia.
+                        Wrong network selected in wallet. Please switch to Arbitrum Sepolia.
                     </p>
                 )}
 
@@ -192,7 +364,11 @@ export function MarketplacePage() {
                     <button
                         type="submit"
                         disabled={
-                            submitting || !address || wrongNetwork || !tokenIdInput || !priceInput
+                            submitting ||
+                            !address ||
+                            wrongNetwork ||
+                            !tokenIdInput ||
+                            !priceInput
                         }
                     >
                         {submitting ? "Listing…" : "List"}
@@ -237,20 +413,75 @@ export function MarketplacePage() {
                                     <th>NFT</th>
                                     <th>Token ID</th>
                                     <th>Seller</th>
-                                    <th>Price (raw)</th>
+                                    <th>Price (USDC)</th>
+                                    <th>Actions</th>
                                 </tr>
                             </thead>
                             <tbody>
-                                {state.data.map((l) => (
-                                    <tr
-                                        key={`${l.nft.toLowerCase()}:${l.tokenId}:${l.lastUpdateTx}`}
-                                    >
-                                        <td title={l.nft}>{shortenAddress(l.nft)}</td>
-                                        <td>{l.tokenId}</td>
-                                        <td title={l.seller}>{shortenAddress(l.seller, 6)}</td>
-                                        <td>{l.price}</td>
-                                    </tr>
-                                ))}
+                                {state.data.map((l) => {
+                                    const key = `${l.nft.toLowerCase()}:${l.tokenId}:${l.lastUpdateTx}`;
+                                    const isMine =
+                                        address &&
+                                        l.seller.toLowerCase() === address.toLowerCase();
+
+                                    const displayPrice = Number(
+                                        formatUnits(l.price, 6) // USDC 6 decimals
+                                    ).toFixed(2);
+
+                                    return (
+                                        <tr key={key}>
+                                            <td title={l.nft}>{shortenAddress(l.nft)}</td>
+                                            <td>{l.tokenId}</td>
+                                            <td title={l.seller}>
+                                                {shortenAddress(l.seller, 6)}
+                                            </td>
+                                            <td>{displayPrice} USDC</td>
+                                            <td>
+                                                {!isMine && (
+                                                    <button
+                                                        onClick={() => handleBuy(l)}
+                                                        disabled={
+                                                            !address ||
+                                                            wrongNetwork ||
+                                                            buyingKey === key
+                                                        }
+                                                    >
+                                                        {buyingKey === key ? "Buying…" : "Buy"}
+                                                    </button>
+                                                )}
+                                                {isMine && (
+                                                    <>
+                                                        <button
+                                                            onClick={() => handleCancel(l)}
+                                                            disabled={
+                                                                !address ||
+                                                                wrongNetwork ||
+                                                                cancelingKey === key
+                                                            }
+                                                            style={{ marginRight: "0.5rem" }}
+                                                        >
+                                                            {cancelingKey === key
+                                                                ? "Canceling…"
+                                                                : "Cancel listing"}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleAmend(l)}
+                                                            disabled={
+                                                                !address ||
+                                                                wrongNetwork ||
+                                                                amendingKey === key
+                                                            }
+                                                        >
+                                                            {amendingKey === key
+                                                                ? "Amending…"
+                                                                : "Amend listing"}
+                                                        </button>
+                                                    </>
+                                                )}
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
                             </tbody>
                         </table>
                     </div>

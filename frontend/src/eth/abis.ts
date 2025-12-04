@@ -24,4 +24,20 @@ export const NFT_ABI = [
 export const MARKET_ABI = [
     // listCollectible(address nft, uint256 tokenId, uint256 price)
     "function listCollectible(address nft, uint256 tokenId, uint256 price)",
+
+    // cancelListing(address nft, uint256 tokenId)
+    "function cancelListing(address nft, uint256 tokenId)",
+
+    // amendListing(address nft, uint256 tokenId, uint256 newPrice)
+    "function amendListing(address nft, uint256 tokenId, uint256 newPrice)",
+
+    // purchaseCollectible(address nft, uint256 tokenId)
+    "function purchaseCollectible(address nft, uint256 tokenId)",
+];
+
+// Minimal ERC20 ABI for USDC (or your mock USDC)
+export const USDC_ERC20_ABI = [
+    "function approve(address spender, uint256 value) returns (bool)",
+    "function allowance(address owner, address spender) view returns (uint256)",
+    "function balanceOf(address account) view returns (uint256)",
 ];
