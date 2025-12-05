@@ -1,34 +1,30 @@
 // src/pages/AccountPage.tsx
 
 import { useState, useEffect } from "react";
-import { parseUnits, formatUnits } from "ethers";
+import { Link } from "react-router-dom";
+import { parseUnits } from "ethers";
 import { useOwnerCollectibles } from "../hooks/useCollectibles";
-import { fetchListings, fetchActivity } from "../api";
-import type { Collectible, Listing, ActivityEvent } from "../api";
+import {
+    fetchListings,
+    fetchActivity,
+    type Collectible,
+    type Listing,
+    type ActivityEvent,
+} from "../api";
 import { useWallet } from "../eth/wallet";
 import { useSignerContracts } from "../eth/contracts";
-import { NFT_ADDRESS, REGISTRY_ADDRESS } from "../eth/config";
+import { NFT_ADDRESS } from "../eth/config";
 
-type LoadStatus = "idle" | "loading" | "success" | "error";
+type Status = "idle" | "loading" | "success" | "error";
 
-function shortenAddress(addr?: string, chars = 4) {
-    if (!addr) return "";
-    const prefix = addr.slice(0, 2 + chars);
-    const suffix = addr.slice(-chars);
-    return `${prefix}…${suffix}`;
-}
-
-function shortenTx(tx?: string, chars = 6) {
-    if (!tx) return "";
-    const prefix = tx.slice(0, 2 + chars);
-    const suffix = tx.slice(-chars);
-    return `${prefix}…${suffix}`;
-}
-
-function formatUsdc(raw?: string): string {
+function formatUsdc(raw: string | null | undefined): string {
     if (!raw) return "—";
     try {
-        return `${formatUnits(raw, 6)} USDC`;
+        const value = Number(raw) / 1_000_000; // 6 decimals
+        return `${value.toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 6,
+        })} USDC`;
     } catch {
         return raw;
     }
@@ -36,8 +32,6 @@ function formatUsdc(raw?: string): string {
 
 export function AccountPage() {
     const { address, hasProvider, wrongNetwork } = useWallet();
-
-    // This is for the collectibles hook, which expects string | null
     const owner = address ?? null;
     const { status, data, error } = useOwnerCollectibles(owner);
 
@@ -49,8 +43,9 @@ export function AccountPage() {
 
     // Activity state
     const [activity, setActivity] = useState<ActivityEvent[]>([]);
-    const [activityStatus, setActivityStatus] = useState<LoadStatus>("idle");
+    const [activityStatus, setActivityStatus] = useState<Status>("idle");
     const [activityError, setActivityError] = useState<string | null>(null);
+    const [showActivity, setShowActivity] = useState<boolean>(false);
 
     function rowKey(c: Collectible): string {
         const tokenPart = c.tokenId ?? "";
@@ -62,7 +57,7 @@ export function AccountPage() {
         setPriceByKey((prev) => ({ ...prev, [key]: value }));
     }
 
-    // Load "is listed" info from backend
+    // Load marketplace listings
     useEffect(() => {
         let cancelled = false;
 
@@ -90,7 +85,7 @@ export function AccountPage() {
         };
     }, []);
 
-    // Load "My Activity" from backend (uses address)
+    // Load activity for current address
     useEffect(() => {
         if (!address) {
             setActivity([]);
@@ -99,29 +94,29 @@ export function AccountPage() {
             return;
         }
 
-        // After the guard, this is definitely a string
         const addr = address;
-
         let cancelled = false;
 
         async function loadActivity() {
             setActivityStatus("loading");
             setActivityError(null);
             try {
-                const res = await fetchActivity(addr);
+                const res = await fetchActivity(addr); // { events: ActivityEvent[] }
                 if (cancelled) return;
                 setActivity(res.events);
                 setActivityStatus("success");
             } catch (err: any) {
                 if (cancelled) return;
                 console.error("failed to load activity", err);
+                setActivity([]);
                 setActivityStatus("error");
                 setActivityError(err?.message ?? "Failed to load activity");
             }
         }
 
         void loadActivity();
-        const interval = setInterval(loadActivity, 20_000);
+
+        const interval = setInterval(loadActivity, 30_000);
         return () => {
             cancelled = true;
             clearInterval(interval);
@@ -134,37 +129,15 @@ export function AccountPage() {
 
     async function handleTransfer(c: Collectible) {
         try {
-            if (!hasProvider) {
-                throw new Error("No injected wallet found.");
-            }
-            if (!address) {
-                throw new Error("No wallet connected.");
-            }
-            if (wrongNetwork) {
-                throw new Error("Wrong network selected in wallet.");
-            }
-
             if (!c.rfid) {
                 alert("Missing RFID for this collectible; cannot transfer.");
-                return;
-            }
-            if (!c.tokenId) {
-                alert("Missing tokenId for this collectible; cannot transfer.");
                 return;
             }
 
             const newOwner = window.prompt("Enter the new owner address (0x...):");
             if (!newOwner) return;
 
-            const nft = await getNft();
             const registry = await getRegistryWithSigner();
-            const tokenId = BigInt(c.tokenId);
-
-            // approve registry to move NFT for off-market transfer
-            const approveTx = await nft.approve(REGISTRY_ADDRESS, tokenId);
-            alert(`Approve tx sent: ${approveTx.hash}`);
-            await approveTx.wait();
-            alert("Approve confirmed.");
 
             const tx = await registry.transferCollectibleOwnership(c.rfid, newOwner);
             alert(`Transfer tx sent: ${tx.hash}`);
@@ -172,22 +145,12 @@ export function AccountPage() {
             alert("Transfer confirmed on-chain.");
         } catch (err: any) {
             console.error(err);
-            alert(`Transfer failed: ${err?.reason ?? err?.message ?? String(err)}`);
+            alert(`Transfer failed: ${err?.message ?? String(err)}`);
         }
     }
 
     async function handleRedeem(c: Collectible) {
         try {
-            if (!hasProvider) {
-                throw new Error("No injected wallet found.");
-            }
-            if (!address) {
-                throw new Error("No wallet connected.");
-            }
-            if (wrongNetwork) {
-                throw new Error("Wrong network selected in wallet.");
-            }
-
             if (!c.rfid) {
                 alert("Missing RFID for this collectible; cannot redeem.");
                 return;
@@ -206,22 +169,12 @@ export function AccountPage() {
             alert("Redeem confirmed on-chain.");
         } catch (err: any) {
             console.error(err);
-            alert(`Redeem failed: ${err?.reason ?? err?.message ?? String(err)}`);
+            alert(`Redeem failed: ${err?.message ?? String(err)}`);
         }
     }
 
     async function handleList(c: Collectible) {
         try {
-            if (!hasProvider) {
-                throw new Error("No injected wallet found.");
-            }
-            if (!address) {
-                throw new Error("No wallet connected.");
-            }
-            if (wrongNetwork) {
-                throw new Error("Wrong network selected in wallet.");
-            }
-
             if (!c.tokenId) {
                 alert("Missing tokenId for this collectible; cannot list.");
                 return;
@@ -238,6 +191,7 @@ export function AccountPage() {
 
             let priceRaw: bigint;
             try {
+                // Assuming USDC 6 decimals in your market
                 priceRaw = parseUnits(priceStr, 6);
             } catch {
                 alert("Invalid price format. Example: 1.0 or 0.5");
@@ -247,16 +201,19 @@ export function AccountPage() {
             const nft = await getNft();
             const market = await getMarket();
 
+            // 1) Approve marketplace for this tokenId
             const approveTx = await nft.approve(market.target, tokenId);
             alert(`Approve tx sent: ${approveTx.hash}`);
             await approveTx.wait();
             alert("Approve confirmed.");
 
+            // 2) List on marketplace
             const listTx = await market.listCollectible(NFT_ADDRESS, tokenId, priceRaw);
             alert(`List tx sent: ${listTx.hash}`);
             await listTx.wait();
             alert("Listing confirmed. The backend will pick up the event shortly.");
 
+            // Optional: clear the price field for this row
             setPriceByKey((prev) => {
                 const copy = { ...prev };
                 delete copy[key];
@@ -264,7 +221,7 @@ export function AccountPage() {
             });
         } catch (err: any) {
             console.error(err);
-            alert(`Listing failed: ${err?.reason ?? err?.message ?? String(err)}`);
+            alert(`Listing failed: ${err?.message ?? String(err)}`);
         }
     }
 
@@ -310,6 +267,7 @@ export function AccountPage() {
                 <p>No collectibles found for this address.</p>
             )}
 
+            {/* Collectibles management table */}
             {data.length > 0 && (
                 <div className="table-wrapper">
                     <table className="listing-table">
@@ -333,7 +291,15 @@ export function AccountPage() {
 
                                 return (
                                     <tr key={`${c.rfidHash}-${c.tokenId ?? "na"}`}>
-                                        <td>{c.tokenId ?? "?"}</td>
+                                        <td>
+                                            {c.tokenId ? (
+                                                <Link to={`/collectible/${c.tokenId}`}>
+                                                    {c.tokenId}
+                                                </Link>
+                                            ) : (
+                                                "?"
+                                            )}
+                                        </td>
                                         <td>{c.rfid ?? "—"}</td>
                                         <td>{c.burned ? "Yes" : "No"}</td>
                                         <td>{c.redeemed ? "Yes" : "No"}</td>
@@ -393,100 +359,112 @@ export function AccountPage() {
                     }}
                 >
                     Note: For listing to succeed, you must own the token and the
-                    marketplace contract will be approved to transfer it. For off-market
-                    transfers, the registry will be approved to transfer the NFT. Price is
+                    marketplace contract will be approved to transfer it. Price is
                     interpreted with 6 decimals (USDC-style). Once listed, the row will
                     show &quot;Listed: Yes&quot;.
                 </p>
             )}
 
-            {/* My Activity */}
-            {address && (
-                <section style={{ marginTop: "2rem" }}>
-                    <h3>My Activity</h3>
+            {/* My Activity - collapsible */}
+            <section style={{ marginTop: "2rem" }}>
+                <div
+                    style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        marginBottom: showActivity ? "0.75rem" : 0,
+                    }}
+                >
+                    <h3 style={{ margin: 0 }}>My Activity</h3>
+                    <button
+                        type="button"
+                        onClick={() => setShowActivity((prev) => !prev)}
+                        style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "0.35rem",
+                            padding: "0.25rem 0.6rem",
+                            borderRadius: "999px",
+                            border: "1px solid #4b5563",
+                            background: "transparent",
+                            cursor: "pointer",
+                            fontSize: "0.85rem",
+                        }}
+                    >
+                        {showActivity ? "Hide activity" : "Show activity"}
+                        <span>{showActivity ? "▲" : "▼"}</span>
+                    </button>
+                </div>
 
-                    {activityStatus === "loading" && <p>Loading activity…</p>}
+                {showActivity && (
+                    <>
+                        {activityStatus === "loading" && (
+                            <p style={{ marginTop: "0.5rem" }}>Loading activity…</p>
+                        )}
 
-                    {activityStatus === "error" && (
-                        <p style={{ color: "red" }}>
-                            Failed to load activity: {activityError}
-                        </p>
-                    )}
+                        {activityStatus === "error" && (
+                            <p style={{ color: "red", marginTop: "0.5rem" }}>
+                                Failed to load activity: {activityError}
+                            </p>
+                        )}
 
-                    {activityStatus === "success" && activity.length === 0 && (
-                        <p>No recent activity found for this address.</p>
-                    )}
+                        {activityStatus === "success" && activity.length === 0 && (
+                            <p style={{ marginTop: "0.5rem" }}>
+                                No recent activity found for this address.
+                            </p>
+                        )}
 
-                    {activityStatus === "success" && activity.length > 0 && (
-                        <div className="table-wrapper">
-                            <table className="listing-table">
-                                <thead>
-                                    <tr>
-                                        <th>When</th>
-                                        <th>Block</th>
-                                        <th>Event</th>
-                                        <th>NFT</th>
-                                        <th>Token</th>
-                                        <th>Price</th>
-                                        <th>From</th>
-                                        <th>To / Owner</th>
-                                        <th>Tx</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    {activity.map((ev) => {
-                                        const when = new Date(ev.createdAt).toLocaleString();
-                                        const from = ev.seller ?? undefined;
-                                        const to = ev.buyer ?? ev.owner ?? undefined;
+                        {activityStatus === "success" && activity.length > 0 && (
+                            <div
+                                className="table-wrapper"
+                                style={{ marginTop: "0.75rem" }}
+                            >
+                                <table className="listing-table">
+                                    <thead>
+                                        <tr>
+                                            <th>When</th>
+                                            <th>Contract</th>
+                                            <th>Event</th>
+                                            <th>RFID Hash</th>
+                                            <th>Token ID</th>
+                                            <th>Price</th>
+                                            <th>From</th>
+                                            <th>To / Owner</th>
+                                            <th>Tx</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {activity.map((ev) => {
+                                            const when = new Date(
+                                                ev.createdAt,
+                                            ).toLocaleString();
+                                            const from = ev.seller ?? null;
+                                            const to = ev.buyer ?? ev.owner ?? null;
 
-                                        return (
-                                            <tr key={`${ev.tx}-${ev.logIndex}`}>
-                                                <td>{when}</td>
-                                                <td>{ev.block}</td>
-                                                <td>{ev.eventName}</td>
-                                                <td>
-                                                    {ev.nft ? (
-                                                        <span title={ev.nft}>
-                                                            {shortenAddress(ev.nft)}
-                                                        </span>
-                                                    ) : (
-                                                        "—"
-                                                    )}
-                                                </td>
-                                                <td>{ev.tokenId ?? "—"}</td>
-                                                <td>{formatUsdc(ev.price)}</td>
-                                                <td>
-                                                    {from ? (
-                                                        <span title={from}>
-                                                            {shortenAddress(from, 6)}
-                                                        </span>
-                                                    ) : (
-                                                        "—"
-                                                    )}
-                                                </td>
-                                                <td>
-                                                    {to ? (
-                                                        <span title={to}>
-                                                            {shortenAddress(to, 6)}
-                                                        </span>
-                                                    ) : (
-                                                        "—"
-                                                    )}
-                                                </td>
-                                                <td>
-                                                    <span title={ev.tx}>
-                                                        {shortenTx(ev.tx, 8)}
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        );
-                                    })}
-                                </tbody>
-                            </table>
-                        </div>
-                    )}
-                </section>
-            )}
+                                            return (
+                                                <tr key={`${ev.tx}-${ev.logIndex}`}>
+                                                    <td>{when}</td>
+                                                    <td>{ev.contract}</td>
+                                                    <td>{ev.eventName}</td>
+                                                    <td>{ev.rfidHash ?? "—"}</td>
+                                                    <td>{ev.tokenId ?? "—"}</td>
+                                                    <td>{formatUsdc(ev.price)}</td>
+                                                    <td>{from ?? "—"}</td>
+                                                    <td>{to ?? "—"}</td>
+                                                    <td title={ev.tx}>
+                                                        {ev.tx.slice(0, 10)}…
+                                                        {ev.tx.slice(-6)}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                </table>
+                            </div>
+                        )}
+                    </>
+                )}
+            </section>
         </div>
     );
 }

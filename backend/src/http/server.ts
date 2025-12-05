@@ -11,6 +11,8 @@ import {
     getAllCollectiblesDb,
     getCollectiblesByOwnerDb,
     getActivityByAddressDb,
+    getCollectibleDetailsByTokenIdDb,
+    getCollectibleDetailsByRfidHashDb,
 } from "../infra/db.js";
 
 type ContractName = "registry" | "nft" | "market" | "all";
@@ -41,7 +43,6 @@ async function readRecentLines(filePath: string, limit: number): Promise<unknown
         }
         return results;
     } catch (err: any) {
-        // file might not exist yet, etc.
         if (err && err.code === "ENOENT") {
             return [];
         }
@@ -74,7 +75,6 @@ export function startHttpServer(): void {
      */
     app.get("/events/recent", async (req: Request, res: Response) => {
         try {
-            // --- Parse query params ---
             const contractParam = (req.query.contract as string | undefined)?.toLowerCase();
             const validContracts: ContractName[] = ["registry", "nft", "market", "all"];
 
@@ -91,7 +91,6 @@ export function startHttpServer(): void {
 
             const baseDir = env.LOG_DIR;
 
-            // --- Determine path to file(s) ---
             if (contract === "all") {
                 const combinedPath = join(baseDir, "collectible_log.jsonl");
                 const events = await readRecentLines(combinedPath, limit);
@@ -129,7 +128,6 @@ export function startHttpServer(): void {
 
     /**
      * GET /collectibles
-     * Returns all collectibles (burned / redeemed included; flags in each object) from SQLite.
      */
     app.get("/collectibles", (_req: Request, res: Response) => {
         try {
@@ -146,7 +144,6 @@ export function startHttpServer(): void {
 
     /**
      * GET /owner/:address
-     * Returns all collectibles where last known owner matches :address (case-insensitive).
      */
     app.get("/owner/:address", (req: Request, res: Response) => {
         try {
@@ -169,7 +166,6 @@ export function startHttpServer(): void {
 
     /**
      * GET /activity/:address
-     * Returns all events where the address is seller, buyer, or owner.
      */
     app.get("/activity/:address", (req: Request, res: Response) => {
         try {
@@ -190,6 +186,56 @@ export function startHttpServer(): void {
             res.status(500).json({ error: "Internal server error" });
         }
     });
+
+    /**
+     * GET /collectible/by-token/:tokenId
+     */
+    app.get("/collectible/by-token/:tokenId", (req: Request, res: Response) => {
+        try {
+            const tokenId = (req.params.tokenId || "").trim();
+            if (!tokenId) {
+                res.status(400).json({ error: "tokenId param is required" });
+                return;
+            }
+
+            const { collectible, events } = getCollectibleDetailsByTokenIdDb(tokenId);
+            res.json({
+                tokenId,
+                collectible,
+                events,
+            });
+        } catch (err) {
+            logger.error(err, "GET /collectible/by-token/:tokenId failed");
+            res.status(500).json({ error: "Internal server error" });
+        }
+    });
+
+    /**
+     * GET /collectible/by-rfid-hash/:rfidHash
+     */
+    app.get(
+        "/collectible/by-rfid-hash/:rfidHash",
+        (req: Request, res: Response) => {
+            try {
+                const rfidHash = (req.params.rfidHash || "").trim();
+                if (!rfidHash) {
+                    res.status(400).json({ error: "rfidHash param is required" });
+                    return;
+                }
+
+                const { collectible, events } =
+                    getCollectibleDetailsByRfidHashDb(rfidHash);
+                res.json({
+                    rfidHash,
+                    collectible,
+                    events,
+                });
+            } catch (err) {
+                logger.error(err, "GET /collectible/by-rfid-hash/:rfidHash failed");
+                res.status(500).json({ error: "Internal server error" });
+            }
+        },
+    );
 
     const port = env.PORT ?? 8080;
     app.listen(port, () => {

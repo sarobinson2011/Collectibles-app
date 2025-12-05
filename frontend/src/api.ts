@@ -1,4 +1,4 @@
-// frontend/src/api.ts
+// src/api.ts
 
 const API_BASE_URL =
     import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8080";
@@ -42,6 +42,13 @@ export type ActivityEvent = {
     tx: string;
     logIndex: number;
     createdAt: number;
+};
+
+export type CollectibleDetails = {
+    tokenId?: string;
+    rfidHash?: string;
+    collectible: Collectible | null;
+    events: ActivityEvent[];
 };
 
 /**
@@ -100,5 +107,31 @@ export async function fetchActivity(
     owner: string,
 ): Promise<ActivityResponse> {
     const data = await getJSON<ActivityResponse>(`/activity/${owner}`);
+    return data;
+}
+
+type CollectibleByTokenResponse = CollectibleDetails & {
+    tokenId: string;
+};
+
+type CollectibleByRfidResponse = CollectibleDetails & {
+    rfidHash: string;
+};
+
+export async function fetchCollectibleByTokenId(
+    tokenId: string,
+): Promise<CollectibleDetails> {
+    const data = await getJSON<CollectibleByTokenResponse>(
+        `/collectible/by-token/${tokenId}`,
+    );
+    return data;
+}
+
+export async function fetchCollectibleByRfidHash(
+    rfidHash: string,
+): Promise<CollectibleDetails> {
+    const data = await getJSON<CollectibleByRfidResponse>(
+        `/collectible/by-rfid-hash/${rfidHash}`,
+    );
     return data;
 }

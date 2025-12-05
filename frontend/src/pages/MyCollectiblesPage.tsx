@@ -1,6 +1,7 @@
 // src/pages/MyCollectiblesPage.tsx
 
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { useOwnerCollectibles } from "../hooks/useCollectibles";
 import { fetchListings } from "../api";
 import type { Collectible, Listing } from "../api";
@@ -111,10 +112,20 @@ export function MyCollectiblesPage() {
 
                                 return (
                                     <tr key={`${c.rfidHash}-${c.tokenId ?? "na"}`}>
-                                        <td>{c.tokenId ?? "?"}</td>
+                                        <td>
+                                            {c.tokenId ? (
+                                                <Link to={`/collectible/${c.tokenId}`}>
+                                                    {c.tokenId}
+                                                </Link>
+                                            ) : (
+                                                "?"
+                                            )}
+                                        </td>
                                         <td>{c.rfid ?? "—"}</td>
                                         <td title={c.rfidHash}>{c.rfidHash}</td>
-                                        <td title={c.authenticityHash}>{c.authenticityHash}</td>
+                                        <td title={c.authenticityHash}>
+                                            {c.authenticityHash}
+                                        </td>
                                         <td>{c.burned ? "Yes" : "No"}</td>
                                         <td>{c.redeemed ? "Yes" : "No"}</td>
                                         <td>{isListed ? "Yes" : "No"}</td>

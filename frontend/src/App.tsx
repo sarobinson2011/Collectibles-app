@@ -6,6 +6,7 @@ import { MyCollectiblesPage } from "./pages/MyCollectiblesPage";
 import { MarketplacePage } from "./pages/MarketplacePage";
 import { AccountPage } from "./pages/AccountPage";
 import { AdminPage } from "./pages/AdminPage";
+import { CollectibleDetailsPage } from "./pages/CollectibleDetailsPage";
 import { useWallet } from "./eth/wallet";
 
 function Layout() {
@@ -53,6 +54,8 @@ function Layout() {
           <Route path="/market" element={<MarketplacePage />} />
           <Route path="/account" element={<AccountPage />} />
           <Route path="/admin" element={<AdminPage />} />
+          {/* New route: Collectible details by tokenId */}
+          <Route path="/collectible/:tokenId" element={<CollectibleDetailsPage />} />
         </Routes>
       </main>
 

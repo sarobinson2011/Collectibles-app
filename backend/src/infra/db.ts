@@ -1,74 +1,26 @@
 // src/infra/db.ts
 
 import Database from "better-sqlite3";
-import { join } from "path";
+import fs from "fs";
+import { dirname, join } from "path";
 import { env } from "../config/env.js";
 
-// Where to store the SQLite DB file (alongside your JSONL logs)
-const DB_PATH = join(env.LOG_DIR, "state.db");
+// Ensure the log dir exists (same dir we use for JSONL)
+const dbDir = dirname(join(env.LOG_DIR, "dummy"));
+if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+}
 
-// Open connection
-const db = new Database(DB_PATH);
+const DB_PATH = join(env.LOG_DIR, "collectibles.db");
+export const db: any = new Database(DB_PATH);
 
-// Pragmas: safe defaults for your use case
+// Basic pragmas for durability + concurrency
 db.pragma("journal_mode = WAL");
 db.pragma("synchronous = NORMAL");
 
-// ----------------------
-// Schema setup
-// ----------------------
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS listings (
-    nft TEXT NOT NULL,
-    token_id TEXT NOT NULL,
-    seller TEXT NOT NULL,
-    price TEXT NOT NULL,
-    buyer TEXT,
-    active INTEGER NOT NULL,
-    last_event TEXT NOT NULL,
-    last_update_block INTEGER NOT NULL,
-    last_update_tx TEXT NOT NULL,
-    PRIMARY KEY (nft, token_id)
-);
-
-CREATE TABLE IF NOT EXISTS collectibles (
-    rfid_hash TEXT PRIMARY KEY,
-    rfid TEXT,
-    token_id TEXT,
-    owner TEXT,
-    authenticity_hash TEXT,
-    burned INTEGER NOT NULL,
-    redeemed INTEGER NOT NULL,
-    last_event TEXT NOT NULL,
-    last_update_block INTEGER NOT NULL,
-    last_update_tx TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    contract TEXT NOT NULL,             -- registry | nft | market
-    event_name TEXT NOT NULL,           -- CollectibleListed, ...
-    nft TEXT,
-    token_id TEXT,
-    rfid_hash TEXT,
-    seller TEXT,
-    buyer TEXT,
-    owner TEXT,
-    price TEXT,
-    block INTEGER NOT NULL,
-    tx TEXT NOT NULL,
-    log_index INTEGER NOT NULL,
-    created_at INTEGER NOT NULL        -- ms since epoch
-);
-
-CREATE INDEX IF NOT EXISTS idx_events_addr ON events (seller, buyer, owner);
-CREATE INDEX IF NOT EXISTS idx_events_block ON events (block, log_index);
-`);
-
-// ----------------------
-// TS-facing types
-// ----------------------
+// -----------------
+// Types (API shapes)
+// -----------------
 
 export type ListingLike = {
     nft: string;
@@ -95,13 +47,12 @@ export type CollectibleLike = {
     lastUpdateTx: string;
 };
 
-// Event record used for activity
 export type ActivityEvent = {
     contract: "registry" | "nft" | "market";
     eventName: string;
+    rfidHash?: string;
     nft?: string;
     tokenId?: string;
-    rfidHash?: string;
     seller?: string;
     buyer?: string;
     owner?: string;
@@ -112,59 +63,124 @@ export type ActivityEvent = {
     createdAt: number;
 };
 
-// Row types as stored in SQLite
+// -----------------
+// Schema
+// -----------------
 
-type ListingRow = {
-    nft: string;
-    token_id: string;
-    seller: string;
-    price: string;
-    buyer: string | null;
-    active: number;
-    last_event: string;
-    last_update_block: number;
-    last_update_tx: string;
-};
+db.exec(`
+CREATE TABLE IF NOT EXISTS listings (
+    nft TEXT NOT NULL,
+    token_id TEXT NOT NULL,
+    seller TEXT NOT NULL,
+    price TEXT NOT NULL,
+    buyer TEXT,
+    active INTEGER NOT NULL,
+    last_event TEXT NOT NULL,
+    last_update_block INTEGER NOT NULL,
+    last_update_tx TEXT NOT NULL,
+    PRIMARY KEY (nft, token_id)
+);
+`);
 
-type CollectibleRow = {
-    rfid_hash: string;
-    rfid: string | null;
-    token_id: string | null;
-    owner: string | null;
-    authenticity_hash: string | null;
-    burned: number;
-    redeemed: number;
-    last_event: string;
-    last_update_block: number;
-    last_update_tx: string;
-};
+db.exec(`
+CREATE TABLE IF NOT EXISTS collectibles (
+    rfid_hash TEXT PRIMARY KEY,
+    rfid TEXT,
+    token_id TEXT,
+    owner TEXT,
+    authenticity_hash TEXT,
+    burned INTEGER NOT NULL,
+    redeemed INTEGER NOT NULL,
+    last_event TEXT NOT NULL,
+    last_update_block INTEGER NOT NULL,
+    last_update_tx TEXT NOT NULL
+);
+`);
 
-type EventRow = {
-    id: number;
-    contract: string;
-    event_name: string;
-    nft: string | null;
-    token_id: string | null;
-    rfid_hash: string | null;
-    seller: string | null;
-    buyer: string | null;
-    owner: string | null;
-    price: string | null;
-    block: number;
-    tx: string;
-    log_index: number;
-    created_at: number;
-};
+db.exec(`
+CREATE TABLE IF NOT EXISTS activity_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    contract TEXT NOT NULL,
+    event_name TEXT NOT NULL,
+    rfid_hash TEXT,
+    nft TEXT,
+    token_id TEXT,
+    seller TEXT,
+    buyer TEXT,
+    owner TEXT,
+    price TEXT,
+    block INTEGER NOT NULL,
+    tx TEXT NOT NULL,
+    log_index INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+`);
 
-// ----------------------
-// Write helpers (upserts)
-// ----------------------
+// -----------------
+// Mapping helpers
+// -----------------
+
+function rowToListing(row: any): ListingLike {
+    return {
+        nft: row.nft,
+        tokenId: row.token_id,
+        seller: row.seller,
+        price: row.price,
+        buyer: row.buyer ?? null,
+        active: !!row.active,
+        lastEvent: row.last_event,
+        lastUpdateBlock: row.last_update_block,
+        lastUpdateTx: row.last_update_tx,
+    };
+}
+
+function rowToCollectible(row: any): CollectibleLike {
+    return {
+        rfidHash: row.rfid_hash,
+        rfid: row.rfid ?? undefined,
+        tokenId: row.token_id ?? undefined,
+        owner: row.owner ?? undefined,
+        authenticityHash: row.authenticity_hash ?? undefined,
+        burned: !!row.burned,
+        redeemed: !!row.redeemed,
+        lastEvent: row.last_event,
+        lastUpdateBlock: row.last_update_block,
+        lastUpdateTx: row.last_update_tx,
+    };
+}
+
+function rowToActivity(row: any): ActivityEvent {
+    const ev: ActivityEvent = {
+        contract: row.contract,
+        eventName: row.event_name,
+        block: row.block,
+        tx: row.tx,
+        logIndex: row.log_index,
+        createdAt: row.created_at,
+    };
+
+    if (row.rfid_hash != null) ev.rfidHash = row.rfid_hash;
+    if (row.nft != null) ev.nft = row.nft;
+    if (row.token_id != null) ev.tokenId = row.token_id;
+    if (row.seller != null) ev.seller = row.seller;
+    if (row.buyer != null) ev.buyer = row.buyer;
+    if (row.owner != null) ev.owner = row.owner;
+    if (row.price != null) ev.price = row.price;
+
+    return ev;
+}
+
+// -----------------
+// Listings helpers
+// -----------------
 
 const upsertListingStmt = db.prepare(`
 INSERT INTO listings (
-    nft, token_id, seller, price, buyer, active, last_event, last_update_block, last_update_tx
+    nft, token_id, seller, price, buyer, active,
+    last_event, last_update_block, last_update_tx
 ) VALUES (
-    @nft, @token_id, @seller, @price, @buyer, @active, @last_event, @last_update_block, @last_update_tx
+    @nft, @token_id, @seller, @price, @buyer, @active,
+    @last_event, @last_update_block, @last_update_tx
 )
 ON CONFLICT (nft, token_id) DO UPDATE SET
     seller = excluded.seller,
@@ -178,7 +194,7 @@ ON CONFLICT (nft, token_id) DO UPDATE SET
 
 export function upsertListingDb(l: ListingLike): void {
     upsertListingStmt.run({
-        nft: l.nft.toLowerCase(),
+        nft: l.nft,
         token_id: l.tokenId,
         seller: l.seller,
         price: l.price,
@@ -189,6 +205,31 @@ export function upsertListingDb(l: ListingLike): void {
         last_update_tx: l.lastUpdateTx,
     });
 }
+
+const selectActiveListingsStmt = db.prepare(`
+SELECT
+    nft,
+    token_id,
+    seller,
+    price,
+    buyer,
+    active,
+    last_event,
+    last_update_block,
+    last_update_tx
+FROM listings
+WHERE active = 1
+ORDER BY last_update_block DESC, last_update_tx DESC;
+`);
+
+export function getActiveListingsDb(): ListingLike[] {
+    const rows = selectActiveListingsStmt.all() as any[];
+    return rows.map(rowToListing);
+}
+
+// -----------------
+// Collectibles helpers
+// -----------------
 
 const upsertCollectibleStmt = db.prepare(`
 INSERT INTO collectibles (
@@ -225,17 +266,80 @@ export function upsertCollectibleDb(c: CollectibleLike): void {
     });
 }
 
-// ---- Events table helpers ----
+const selectAllCollectiblesStmt = db.prepare(`
+SELECT
+    rfid_hash,
+    rfid,
+    token_id,
+    owner,
+    authenticity_hash,
+    burned,
+    redeemed,
+    last_event,
+    last_update_block,
+    last_update_tx
+FROM collectibles;
+`);
+
+export function getAllCollectiblesDb(): CollectibleLike[] {
+    const rows = selectAllCollectiblesStmt.all() as any[];
+    return rows.map(rowToCollectible);
+}
+
+const selectCollectiblesByOwnerStmt = db.prepare(`
+SELECT
+    rfid_hash,
+    rfid,
+    token_id,
+    owner,
+    authenticity_hash,
+    burned,
+    redeemed,
+    last_event,
+    last_update_block,
+    last_update_tx
+FROM collectibles
+WHERE LOWER(owner) = LOWER(?);
+`);
+
+export function getCollectiblesByOwnerDb(owner: string): CollectibleLike[] {
+    const rows = selectCollectiblesByOwnerStmt.all(owner) as any[];
+    return rows.map(rowToCollectible);
+}
+
+// -----------------
+// Activity helpers
+// -----------------
 
 const insertEventStmt = db.prepare(`
-INSERT INTO events (
-    contract, event_name, nft, token_id, rfid_hash,
-    seller, buyer, owner, price,
-    block, tx, log_index, created_at
+INSERT INTO activity_events (
+    contract,
+    event_name,
+    rfid_hash,
+    nft,
+    token_id,
+    seller,
+    buyer,
+    owner,
+    price,
+    block,
+    tx,
+    log_index,
+    created_at
 ) VALUES (
-    @contract, @event_name, @nft, @token_id, @rfid_hash,
-    @seller, @buyer, @owner, @price,
-    @block, @tx, @log_index, @created_at
+    @contract,
+    @event_name,
+    @rfid_hash,
+    @nft,
+    @token_id,
+    @seller,
+    @buyer,
+    @owner,
+    @price,
+    @block,
+    @tx,
+    @log_index,
+    @created_at
 );
 `);
 
@@ -243,9 +347,9 @@ export function insertEventDb(ev: ActivityEvent): void {
     insertEventStmt.run({
         contract: ev.contract,
         event_name: ev.eventName,
+        rfid_hash: ev.rfidHash ?? null,
         nft: ev.nft ?? null,
         token_id: ev.tokenId ?? null,
-        rfid_hash: ev.rfidHash ?? null,
         seller: ev.seller ?? null,
         buyer: ev.buyer ?? null,
         owner: ev.owner ?? null,
@@ -257,140 +361,146 @@ export function insertEventDb(ev: ActivityEvent): void {
     });
 }
 
-// ----------------------
-// Read helpers (API use)
-// ----------------------
-
-// Active listings (for /listings)
-const selectActiveListingsStmt = db.prepare(`
-SELECT *
-FROM listings
-WHERE active = 1
-ORDER BY last_update_block DESC, last_update_tx DESC;
-`);
-
-export function getActiveListingsDb(): ListingLike[] {
-    const rows = selectActiveListingsStmt.all() as ListingRow[];
-
-    return rows.map((r) => ({
-        nft: r.nft,
-        tokenId: r.token_id,
-        seller: r.seller,
-        price: r.price,
-        buyer: r.buyer,
-        active: r.active === 1,
-        lastEvent: r.last_event,
-        lastUpdateBlock: r.last_update_block,
-        lastUpdateTx: r.last_update_tx,
-    }));
-}
-
-// All collectibles (for /collectibles)
-const selectAllCollectiblesStmt = db.prepare(`
-SELECT *
-FROM collectibles
-ORDER BY last_update_block DESC, last_update_tx DESC;
-`);
-
-export function getAllCollectiblesDb(): CollectibleLike[] {
-    const rows = selectAllCollectiblesStmt.all() as CollectibleRow[];
-
-    return rows.map((r) => {
-        const c: CollectibleLike = {
-            rfidHash: r.rfid_hash,
-            burned: r.burned === 1,
-            redeemed: r.redeemed === 1,
-            lastEvent: r.last_event,
-            lastUpdateBlock: r.last_update_block,
-            lastUpdateTx: r.last_update_tx,
-        };
-
-        if (r.rfid !== null) {
-            c.rfid = r.rfid;
-        }
-        if (r.token_id !== null) {
-            c.tokenId = r.token_id;
-        }
-        if (r.owner !== null) {
-            c.owner = r.owner;
-        }
-        if (r.authenticity_hash !== null) {
-            c.authenticityHash = r.authenticity_hash;
-        }
-
-        return c;
-    });
-}
-
-// Collectibles by owner (for /owner/:address)
-const selectCollectiblesByOwnerStmt = db.prepare(`
-SELECT *
-FROM collectibles
-WHERE LOWER(owner) = LOWER(@owner)
-ORDER BY last_update_block DESC, last_update_tx DESC;
-`);
-
-export function getCollectiblesByOwnerDb(owner: string): CollectibleLike[] {
-    const rows = selectCollectiblesByOwnerStmt.all({ owner }) as CollectibleRow[];
-
-    return rows.map((r) => {
-        const c: CollectibleLike = {
-            rfidHash: r.rfid_hash,
-            burned: r.burned === 1,
-            redeemed: r.redeemed === 1,
-            lastEvent: r.last_event,
-            lastUpdateBlock: r.last_update_block,
-            lastUpdateTx: r.last_update_tx,
-        };
-
-        if (r.rfid !== null) {
-            c.rfid = r.rfid;
-        }
-        if (r.token_id !== null) {
-            c.tokenId = r.token_id;
-        }
-        if (r.owner !== null) {
-            c.owner = r.owner;
-        }
-        if (r.authenticity_hash !== null) {
-            c.authenticityHash = r.authenticity_hash;
-        }
-
-        return c;
-    });
-}
-
-// Activity for a given address
 const selectActivityByAddressStmt = db.prepare(`
-SELECT *
-FROM events
-WHERE LOWER(COALESCE(seller, '')) = LOWER(@addr)
-   OR LOWER(COALESCE(buyer, '')) = LOWER(@addr)
-   OR LOWER(COALESCE(owner, '')) = LOWER(@addr)
-ORDER BY block DESC, log_index DESC, id DESC;
+SELECT
+    contract,
+    event_name,
+    rfid_hash,
+    nft,
+    token_id,
+    seller,
+    buyer,
+    owner,
+    price,
+    block,
+    tx,
+    log_index,
+    created_at
+FROM activity_events
+WHERE LOWER(seller) = LOWER(?)
+   OR LOWER(buyer) = LOWER(?)
+   OR LOWER(owner) = LOWER(?)
+ORDER BY block DESC, log_index DESC;
 `);
 
-export function getActivityByAddressDb(addr: string): ActivityEvent[] {
-    const rows = selectActivityByAddressStmt.all({ addr }) as EventRow[];
+export function getActivityByAddressDb(address: string): ActivityEvent[] {
+    const rows = selectActivityByAddressStmt.all(address, address, address) as any[];
+    return rows.map(rowToActivity);
+}
 
-    return rows.map((r) => {
-        const ev: ActivityEvent = {
-            contract: r.contract as "registry" | "nft" | "market",
-            eventName: r.event_name,
-            block: r.block,
-            tx: r.tx,
-            logIndex: r.log_index,
-            createdAt: r.created_at,
-        };
+// -----------------------------
+// Collectible details helpers
+// -----------------------------
 
-        if (r.nft !== null) ev.nft = r.nft;
-        if (r.token_id !== null) ev.tokenId = r.token_id;
-        if (r.rfid_hash !== null) ev.rfidHash = r.rfid_hash;
-        if (r.seller !== null) ev.seller = r.seller;
-        if (r.buyer !== null) ev.buyer = r.buyer;
-        if (r.owner !== null) ev.owner = r.owner;
-        if (r.price !== null) ev.price = r.price;
+// For the details endpoints we just reuse the same API-facing types
+export type CollectibleDetailsResult = {
+    collectible: CollectibleLike | null;
+    events: ActivityEvent[];
+};
 
-        return ev;
-    });
+export function getCollectibleDetailsByTokenIdDb(
+    tokenId: string,
+): CollectibleDetailsResult {
+    const collectibleRowStmt = db.prepare(`
+        SELECT
+            rfid_hash,
+            rfid,
+            token_id,
+            owner,
+            authenticity_hash,
+            burned,
+            redeemed,
+            last_event,
+            last_update_block,
+            last_update_tx
+        FROM collectibles
+        WHERE token_id = ?
+        LIMIT 1;
+    `);
+
+    const row = collectibleRowStmt.get(tokenId) as any | undefined;
+    const collectible = row ? rowToCollectible(row) : null;
+
+    const rfidHashNorm = collectible?.rfidHash
+        ? collectible.rfidHash.toLowerCase()
+        : "";
+
+    const eventsStmt: any = db.prepare(`
+        SELECT
+            contract,
+            event_name,
+            rfid_hash,
+            nft,
+            token_id,
+            seller,
+            buyer,
+            owner,
+            price,
+            block,
+            tx,
+            log_index,
+            created_at
+        FROM activity_events
+        WHERE token_id = ?
+           OR (rfid_hash IS NOT NULL AND LOWER(rfid_hash) = ?)
+        ORDER BY block ASC, log_index ASC;
+    `);
+
+    const eventsRows = eventsStmt.all(tokenId, rfidHashNorm) as any[];
+    const events = eventsRows.map(rowToActivity);
+
+    return { collectible, events };
+}
+
+export function getCollectibleDetailsByRfidHashDb(
+    rfidHash: string,
+): CollectibleDetailsResult {
+    const norm = rfidHash.toLowerCase();
+
+    const collectibleRowStmt = db.prepare(`
+        SELECT
+            rfid_hash,
+            rfid,
+            token_id,
+            owner,
+            authenticity_hash,
+            burned,
+            redeemed,
+            last_event,
+            last_update_block,
+            last_update_tx
+        FROM collectibles
+        WHERE LOWER(rfid_hash) = ?
+        LIMIT 1;
+    `);
+
+    const row = collectibleRowStmt.get(norm) as any | undefined;
+    const collectible = row ? rowToCollectible(row) : null;
+    const tokenIdFilter = collectible?.tokenId ?? "";
+
+    const eventsStmt: any = db.prepare(`
+        SELECT
+            contract,
+            event_name,
+            rfid_hash,
+            nft,
+            token_id,
+            seller,
+            buyer,
+            owner,
+            price,
+            block,
+            tx,
+            log_index,
+            created_at
+        FROM activity_events
+        WHERE (rfid_hash IS NOT NULL AND LOWER(rfid_hash) = ?)
+           OR (token_id IS NOT NULL AND token_id = ?)
+        ORDER BY block ASC, log_index ASC;
+    `);
+
+    const eventsRows = eventsStmt.all(norm, tokenIdFilter) as any[];
+    const events = eventsRows.map(rowToActivity);
+
+    return { collectible, events };
 }

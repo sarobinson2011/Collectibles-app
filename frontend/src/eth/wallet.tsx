@@ -1,7 +1,12 @@
 // src/eth/wallet.tsx
 
-import { createContext, useContext, useEffect, useState } from "react";
-import type { ReactNode } from "react";
+import {
+    createContext,
+    useContext,
+    useEffect,
+    useState,
+    type ReactNode,
+} from "react";
 import { BrowserProvider } from "ethers";
 import { CHAIN_ID } from "./config";
 
@@ -17,6 +22,12 @@ type WalletContextValue = {
 
 const WalletContext = createContext<WalletContextValue | undefined>(undefined);
 
+declare global {
+    interface Window {
+        ethereum?: any;
+    }
+}
+
 export function WalletProvider({ children }: { children: ReactNode }) {
     const [address, setAddress] = useState<string | null>(null);
     const [chainId, setChainId] = useState<number | null>(null);
@@ -24,30 +35,40 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     const [connecting, setConnecting] = useState(false);
     const [hasProvider, setHasProvider] = useState(false);
 
-    // Detect provider + existing connection on mount
     useEffect(() => {
-        if (typeof window === "undefined") return;
-        const eth = (window as any).ethereum;
+        const eth = window.ethereum;
         if (!eth) {
             setHasProvider(false);
             return;
         }
 
         setHasProvider(true);
+
+        // Single BrowserProvider instance for the current ethereum object
         const prov = new BrowserProvider(eth);
         setProvider(prov);
 
+        let cancelled = false;
+
+        // SOFT CONNECT:
+        // - uses eth_accounts (no popup)
+        // - restores account + chain on page load if already authorized
         async function init() {
             try {
                 const accounts: string[] = await eth.request({
                     method: "eth_accounts",
                 });
-                setAddress(accounts[0] ?? null);
+                if (!cancelled) {
+                    setAddress(accounts[0] ?? null);
+                }
 
                 const chainIdHex: string = await eth.request({
                     method: "eth_chainId",
                 });
-                setChainId(parseInt(chainIdHex, 16));
+                const parsed = parseInt(chainIdHex, 16);
+                if (!cancelled) {
+                    setChainId(Number.isFinite(parsed) ? parsed : null);
+                }
             } catch (e) {
                 console.error("wallet init error", e);
             }
@@ -55,27 +76,32 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
         void init();
 
-        const handleAccountsChanged = (accounts: string[]) => {
+        // React to account changes (MetaMask account switch)
+        function handleAccountsChanged(accounts: string[]) {
             setAddress(accounts[0] ?? null);
-        };
+        }
 
-        const handleChainChanged = (_chainIdHex: string) => {
-            // simplest: reload to keep things consistent
-            window.location.reload();
-        };
+        // React to network changes (chain switch) without reload
+        function handleChainChanged(chainIdHex: string) {
+            const parsed = parseInt(chainIdHex, 16);
+            setChainId(Number.isFinite(parsed) ? parsed : null);
+        }
 
         eth.on?.("accountsChanged", handleAccountsChanged);
         eth.on?.("chainChanged", handleChainChanged);
 
         return () => {
+            cancelled = true;
             eth.removeListener?.("accountsChanged", handleAccountsChanged);
             eth.removeListener?.("chainChanged", handleChainChanged);
         };
     }, []);
 
+    // EXPLICIT CONNECT:
+    // - uses eth_requestAccounts (MetaMask popup)
+    // - lets the user connect when they click your "Connect" button
     async function connect() {
-        if (typeof window === "undefined") return;
-        const eth = (window as any).ethereum;
+        const eth = window.ethereum;
         if (!eth) {
             alert("No injected wallet found (e.g. MetaMask).");
             return;
@@ -92,7 +118,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             const chainIdHex: string = await eth.request({
                 method: "eth_chainId",
             });
-            setChainId(parseInt(chainIdHex, 16));
+            const parsed = parseInt(chainIdHex, 16);
+            setChainId(Number.isFinite(parsed) ? parsed : null);
         } catch (e) {
             console.error("wallet connect error", e);
         } finally {

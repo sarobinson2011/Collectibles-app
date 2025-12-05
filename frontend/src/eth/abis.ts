@@ -12,12 +12,14 @@ export const REGISTRY_ABI = [
     "function redeemCollectible(string rfid)",
 ];
 
-// Minimal ERC721 we need for approvals
+// Minimal ERC721 we need for approvals + metadata
 export const NFT_ABI = [
     // standard ERC721
     "function approve(address to, uint256 tokenId)",
     "function getApproved(uint256 tokenId) view returns (address)",
     "function ownerOf(uint256 tokenId) view returns (address)",
+    // metadata
+    "function tokenURI(uint256 tokenId) view returns (string)",
 ];
 
 // Marketplace functions we’ll call
