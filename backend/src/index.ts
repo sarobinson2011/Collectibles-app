@@ -50,9 +50,11 @@ type Ctx = {
 };
 
 // Build interfaces if ABIs exist
-const REG_IFACE = REGISTRY_ABI.length > 0 ? new Interface(REGISTRY_ABI as any) : null;
+const REG_IFACE =
+    REGISTRY_ABI.length > 0 ? new Interface(REGISTRY_ABI as any) : null;
 const NFT_IFACE = NFT_ABI.length > 0 ? new Interface(NFT_ABI as any) : null;
-const MKT_IFACE = MARKET_ABI.length > 0 ? new Interface(MARKET_ABI as any) : null;
+const MKT_IFACE =
+    MARKET_ABI.length > 0 ? new Interface(MARKET_ABI as any) : null;
 
 const contracts: Record<string, Ctx> = {
     [env.REGISTRY_ADDRESS.toLowerCase()]: {
@@ -164,7 +166,9 @@ async function bootstrapStateFromLogs(): Promise<void> {
     try {
         const data = await fs.readFile(path, "utf8");
         if (!data) {
-            logger.info("No collectible_log.jsonl found or file empty; skipping bootstrap");
+            logger.info(
+                "No collectible_log.jsonl found or file empty; skipping bootstrap",
+            );
             return;
         }
 
@@ -201,6 +205,36 @@ async function bootstrapStateFromLogs(): Promise<void> {
     }
 }
 
+/**
+ * Robustly fetch the latest block number with exponential backoff.
+ * Never throws; returns null if it can't succeed after retries.
+ */
+async function getLatestBlockWithBackoff(
+    provider: JsonRpcProvider,
+    opts?: { maxAttempts?: number; initialDelayMs?: number; maxDelayMs?: number },
+): Promise<number | null> {
+    const maxAttempts = opts?.maxAttempts ?? 8;
+    let delay = opts?.initialDelayMs ?? 1_000;
+    const maxDelay = opts?.maxDelayMs ?? 30_000;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            return await provider.getBlockNumber();
+        } catch (err: any) {
+            const msg = String(err?.message ?? "");
+            const code = String(err?.code ?? "");
+            logger.warn(
+                { attempt, delay, code, msg },
+                "eth_blockNumber failed; backing off",
+            );
+            await new Promise((r) => setTimeout(r, delay));
+            delay = Math.min(Math.floor(delay * 1.8), maxDelay);
+        }
+    }
+
+    return null;
+}
+
 async function main() {
     logger.info({ env }, "Backend starting");
 
@@ -222,18 +256,19 @@ async function main() {
     // WS resilience: log on close instead of killing the process
     // @ts-expect-error _ws is not typed by ethers; present in Node runtime
     ws._ws?.addEventListener?.("close", () => {
-        logger.warn("WS closed. Live event listening stopped, HTTP server still running.");
+        logger.warn(
+            "WS closed. Live event listening stopped, HTTP server still running.",
+        );
         // If you want to implement reconnect logic later, you can do it here.
     });
 
-    // 4) Try to log the latest block, but DO NOT crash if RPC is down
-    try {
-        const latest = await http.getBlockNumber();
+    // 4) Try to log the latest block, but DO NOT crash if RPC is down / rate-limited
+    const latest = await getLatestBlockWithBackoff(http);
+    if (latest !== null) {
         logger.info({ latest }, "Listeners attached (HTTP RPC OK)");
-    } catch (err) {
-        logger.error(err, "Failed to query latest block via HTTP RPC");
+    } else {
         logger.warn(
-            "Continuing without HTTP chain height; WS events and HTTP API will still run.",
+            "Could not fetch latest block after retries; continuing without HTTP chain height. WS events and HTTP API will still run.",
         );
     }
 }

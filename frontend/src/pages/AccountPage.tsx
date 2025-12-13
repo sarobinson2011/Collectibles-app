@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
-import { parseUnits } from "ethers";
+import { parseUnits, BrowserProvider, Contract } from "ethers";
 import { useOwnerCollectibles } from "../hooks/useCollectibles";
 import {
     fetchListings,
@@ -14,8 +14,10 @@ import {
 import { useWallet } from "../eth/wallet";
 import { useSignerContracts } from "../eth/contracts";
 import { NFT_ADDRESS } from "../eth/config";
+import { NFT_ABI } from "../eth/abis";
 
 type Status = "idle" | "loading" | "success" | "error";
+type LoyaltyStatus = "idle" | "loading" | "success" | "error";
 
 function formatUsdc(raw: string | null | undefined): string {
     if (!raw) return "—";
@@ -30,8 +32,56 @@ function formatUsdc(raw: string | null | undefined): string {
     }
 }
 
+type TierTone = "bronze" | "silver" | "gold";
+
+function tierTone(tier: string): TierTone {
+    const t = (tier || "").toLowerCase();
+    if (t === "gold") return "gold";
+    if (t === "silver") return "silver";
+    return "bronze";
+}
+
+function TierBadge({ tier }: { tier: string }) {
+    const tone = tierTone(tier);
+
+    let bg = "rgba(251, 146, 60, 0.14)"; // bronze
+    let border = "rgba(251, 146, 60, 0.55)";
+    let color = "#fed7aa";
+
+    if (tone === "silver") {
+        bg = "rgba(148, 163, 184, 0.14)";
+        border = "rgba(148, 163, 184, 0.55)";
+        color = "#e5e7eb";
+    } else if (tone === "gold") {
+        bg = "rgba(234, 179, 8, 0.14)";
+        border = "rgba(234, 179, 8, 0.55)";
+        color = "#fde68a";
+    }
+
+    const label = tone === "bronze" ? "Bronze" : tone === "silver" ? "Silver" : "Gold";
+
+    return (
+        <span
+            style={{
+                padding: "0.25rem 0.6rem",
+                borderRadius: "999px",
+                border: `1px solid ${border}`,
+                backgroundColor: bg,
+                color,
+                fontSize: "0.8rem",
+                fontWeight: 700,
+                letterSpacing: "0.01em",
+                whiteSpace: "nowrap",
+            }}
+            title="Current loyalty tier"
+        >
+            {label}
+        </span>
+    );
+}
+
 export function AccountPage() {
-    const { address, hasProvider, wrongNetwork } = useWallet();
+    const { address, hasProvider, wrongNetwork, provider } = useWallet();
     const owner = address ?? null;
     const { status, data, error } = useOwnerCollectibles(owner);
 
@@ -46,6 +96,12 @@ export function AccountPage() {
     const [activityStatus, setActivityStatus] = useState<Status>("idle");
     const [activityError, setActivityError] = useState<string | null>(null);
     const [showActivity, setShowActivity] = useState<boolean>(false);
+
+    // Loyalty state (points + tier)
+    const [loyaltyStatus, setLoyaltyStatus] = useState<LoyaltyStatus>("idle");
+    const [points, setPoints] = useState<string>("0");
+    const [tier, setTier] = useState<string>("Bronze");
+    const [loyaltyError, setLoyaltyError] = useState<string | null>(null);
 
     function rowKey(c: Collectible): string {
         const tokenPart = c.tokenId ?? "";
@@ -122,6 +178,53 @@ export function AccountPage() {
             clearInterval(interval);
         };
     }, [address]);
+
+    // Load loyalty points + tier (polling for now; we’ll switch to event-driven next)
+    useEffect(() => {
+        let cancelled = false;
+
+        async function loadLoyalty() {
+            setLoyaltyError(null);
+
+            if (!hasProvider || !provider || !address || wrongNetwork) {
+                setLoyaltyStatus("idle");
+                setPoints("0");
+                setTier("Bronze");
+                return;
+            }
+
+            setLoyaltyStatus("loading");
+
+            try {
+                const p = provider as BrowserProvider;
+                const nft = new Contract(NFT_ADDRESS, NFT_ABI, p);
+
+                const [pts, tr] = await Promise.all([
+                    nft.getPoints(address),
+                    nft.getTier(address),
+                ]);
+
+                if (cancelled) return;
+
+                setPoints(typeof pts === "bigint" ? pts.toString() : String(pts));
+                setTier(String(tr));
+                setLoyaltyStatus("success");
+            } catch (err: any) {
+                if (cancelled) return;
+                console.error("failed to load loyalty", err);
+                setLoyaltyStatus("error");
+                setLoyaltyError(err?.shortMessage ?? err?.message ?? "Failed to load loyalty");
+            }
+        }
+
+        void loadLoyalty();
+        const interval = setInterval(loadLoyalty, 15_000);
+
+        return () => {
+            cancelled = true;
+            clearInterval(interval);
+        };
+    }, [hasProvider, provider, address, wrongNetwork]);
 
     async function getRegistryWithSigner() {
         return getRegistry();
@@ -250,9 +353,63 @@ export function AccountPage() {
             )}
 
             {address && !wrongNetwork && (
-                <p>
-                    Connected as <strong>{address}</strong>
-                </p>
+                <div
+                    style={{
+                        marginTop: "0.75rem",
+                        borderRadius: "0.9rem",
+                        border: "1px solid #1f2937",
+                        background: "#020617",
+                        padding: "1rem",
+                    }}
+                >
+                    <div
+                        style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            alignItems: "center",
+                            gap: "1rem",
+                            flexWrap: "wrap",
+                        }}
+                    >
+                        <div>
+                            <div style={{ opacity: 0.75, fontSize: "0.85rem" }}>
+                                Connected as
+                            </div>
+                            <div style={{ fontWeight: 700 }}>{address}</div>
+                        </div>
+
+                        <div
+                            style={{
+                                display: "flex",
+                                gap: "0.75rem",
+                                alignItems: "center",
+                                flexWrap: "wrap",
+                            }}
+                        >
+                            <TierBadge tier={tier} />
+                            <div style={{ textAlign: "right" }}>
+                                <div style={{ opacity: 0.75, fontSize: "0.85rem" }}>
+                                    Loyalty points
+                                </div>
+                                <div
+                                    style={{
+                                        fontSize: "1.8rem",
+                                        fontWeight: 800,
+                                        letterSpacing: "-0.02em",
+                                    }}
+                                >
+                                    {loyaltyStatus === "loading" ? "…" : points}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {loyaltyStatus === "error" && (
+                        <div style={{ marginTop: "0.75rem", color: "#f97373" }}>
+                            Failed to load loyalty info: {loyaltyError}
+                        </div>
+                    )}
+                </div>
             )}
 
             {address && status === "loading" && data.length === 0 && (

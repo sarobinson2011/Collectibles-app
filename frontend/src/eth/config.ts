@@ -13,3 +13,8 @@ export const NFT_ADDRESS =
 export const MARKET_ADDRESS =
     import.meta.env.VITE_MARKET_ADDRESS ??
     "0xEce42dA8437980cB22AA09C9676e698AC054c95e";
+
+// Admin wallet (deployer / owner)
+export const ADMIN_ADDRESS =
+    import.meta.env.VITE_ADMIN_ADDRESS ??
+    "0xF8f8269488f73fab3935555FCDdD6035699deE25";

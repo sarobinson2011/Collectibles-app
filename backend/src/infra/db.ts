@@ -63,6 +63,18 @@ export type ActivityEvent = {
     createdAt: number;
 };
 
+// New: image type for primary collectible image
+export type CollectibleImageLike = {
+    rfidHash: string;
+    originalUrl: string;
+    detailUrl: string;
+    cardUrl: string;
+    thumbUrl: string;
+    width: number;      // width of the processed "original" variant
+    height: number;     // height of the processed "original" variant
+    createdAt: number;  // unix ms timestamp
+};
+
 // -----------------
 // Schema
 // -----------------
@@ -113,6 +125,21 @@ CREATE TABLE IF NOT EXISTS activity_events (
     tx TEXT NOT NULL,
     log_index INTEGER NOT NULL,
     created_at INTEGER NOT NULL
+);
+`);
+
+// New: one primary image per collectible (rfid_hash)
+db.exec(`
+CREATE TABLE IF NOT EXISTS collectible_images (
+    rfid_hash TEXT PRIMARY KEY,
+    original_url TEXT NOT NULL,
+    detail_url TEXT NOT NULL,
+    card_url TEXT NOT NULL,
+    thumb_url TEXT NOT NULL,
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (rfid_hash) REFERENCES collectibles(rfid_hash)
 );
 `);
 
@@ -168,6 +195,20 @@ function rowToActivity(row: any): ActivityEvent {
     if (row.price != null) ev.price = row.price;
 
     return ev;
+}
+
+// New: image row mapping
+function rowToCollectibleImage(row: any): CollectibleImageLike {
+    return {
+        rfidHash: row.rfid_hash,
+        originalUrl: row.original_url,
+        detailUrl: row.detail_url,
+        cardUrl: row.card_url,
+        thumbUrl: row.thumb_url,
+        width: row.width,
+        height: row.height,
+        createdAt: row.created_at,
+    };
 }
 
 // -----------------
@@ -305,6 +346,18 @@ WHERE LOWER(owner) = LOWER(?);
 export function getCollectiblesByOwnerDb(owner: string): CollectibleLike[] {
     const rows = selectCollectiblesByOwnerStmt.all(owner) as any[];
     return rows.map(rowToCollectible);
+}
+
+export function collectibleExistsByRfidHashDb(rfidHash: string): boolean {
+    const norm = rfidHash.toLowerCase();
+    const stmt = db.prepare(`
+        SELECT 1
+        FROM collectibles
+        WHERE LOWER(rfid_hash) = ?
+        LIMIT 1;
+    `);
+    const row = stmt.get(norm) as any | undefined;
+    return !!row;
 }
 
 // -----------------
@@ -503,4 +556,84 @@ export function getCollectibleDetailsByRfidHashDb(
     const events = eventsRows.map(rowToActivity);
 
     return { collectible, events };
+}
+
+// -----------------------------
+// Collectible image helpers
+// -----------------------------
+
+const upsertCollectibleImageStmt = db.prepare(`
+INSERT INTO collectible_images (
+    rfid_hash,
+    original_url,
+    detail_url,
+    card_url,
+    thumb_url,
+    width,
+    height,
+    created_at
+) VALUES (
+    @rfid_hash,
+    @original_url,
+    @detail_url,
+    @card_url,
+    @thumb_url,
+    @width,
+    @height,
+    @created_at
+)
+ON CONFLICT (rfid_hash) DO UPDATE SET
+    original_url = excluded.original_url,
+    detail_url   = excluded.detail_url,
+    card_url     = excluded.card_url,
+    thumb_url    = excluded.thumb_url,
+    width        = excluded.width,
+    height       = excluded.height,
+    created_at   = excluded.created_at;
+`);
+
+/**
+ * Upsert the primary image for a collectible (by rfid_hash).
+ * Call this from your image upload endpoint after you have generated
+ * all variants and know the final URLs + dimensions.
+ */
+export function upsertCollectibleImageDb(img: CollectibleImageLike): void {
+    upsertCollectibleImageStmt.run({
+        rfid_hash: img.rfidHash.toLowerCase(),
+        original_url: img.originalUrl,
+        detail_url: img.detailUrl,
+        card_url: img.cardUrl,
+        thumb_url: img.thumbUrl,
+        width: img.width,
+        height: img.height,
+        created_at: img.createdAt,
+    });
+}
+
+const selectCollectibleImageByRfidHashStmt = db.prepare(`
+SELECT
+    rfid_hash,
+    original_url,
+    detail_url,
+    card_url,
+    thumb_url,
+    width,
+    height,
+    created_at
+FROM collectible_images
+WHERE LOWER(rfid_hash) = ?
+LIMIT 1;
+`);
+
+/**
+ * Fetch the primary image for a collectible by RFID hash.
+ * You can call this in your details / listing services to attach
+ * image URLs to the payload you send to the frontend.
+ */
+export function getCollectibleImageByRfidHashDb(
+    rfidHash: string,
+): CollectibleImageLike | null {
+    const norm = rfidHash.toLowerCase();
+    const row = selectCollectibleImageByRfidHashStmt.get(norm) as any | undefined;
+    return row ? rowToCollectibleImage(row) : null;
 }

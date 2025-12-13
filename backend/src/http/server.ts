@@ -4,6 +4,8 @@ import express, { type Request, type Response } from "express";
 import cors from "cors";
 import { join } from "path";
 import fs from "fs/promises";
+import fsSync from "fs";
+import multer from "multer";
 import { env } from "../config/env.js";
 import { logger } from "../infra/logger.js";
 import {
@@ -13,6 +15,9 @@ import {
     getActivityByAddressDb,
     getCollectibleDetailsByTokenIdDb,
     getCollectibleDetailsByRfidHashDb,
+    getCollectibleImageByRfidHashDb,
+    upsertCollectibleImageDb,
+    collectibleExistsByRfidHashDb,
 } from "../infra/db.js";
 
 type ContractName = "registry" | "nft" | "market" | "all";
@@ -22,6 +27,22 @@ const LOG_FILES: Record<Exclude<ContractName, "all">, string> = {
     nft: "nft_log.jsonl",
     market: "market_log.jsonl",
 };
+
+// ---- Image storage setup ----
+
+const IMAGES_DIR = join(env.LOG_DIR, "images");
+
+if (!fsSync.existsSync(IMAGES_DIR)) {
+    fsSync.mkdirSync(IMAGES_DIR, { recursive: true });
+}
+
+// Derive base URL from the backend port
+const PUBLIC_BASE_URL = `http://localhost:${env.PORT ?? 8080}`;
+
+const upload = multer({ dest: IMAGES_DIR });
+
+// Local type so TS knows about req.file in our upload handler
+type MulterRequest = Request & { file?: any };
 
 async function readRecentLines(filePath: string, limit: number): Promise<unknown[]> {
     try {
@@ -55,6 +76,9 @@ export function startHttpServer(): void {
 
     app.use(cors());
     app.use(express.json());
+
+    // Serve images: http://localhost:8080/images/<filename>
+    app.use("/images", express.static(IMAGES_DIR));
 
     // Simple health check
     app.get("/health", (_req: Request, res: Response) => {
@@ -128,10 +152,22 @@ export function startHttpServer(): void {
 
     /**
      * GET /collectibles
+     * Returns all collectibles, enriched with image URLs (if present).
      */
     app.get("/collectibles", (_req: Request, res: Response) => {
         try {
-            const collectibles = getAllCollectiblesDb();
+            const base = getAllCollectiblesDb();
+
+            const collectibles = base.map((c) => {
+                const img = getCollectibleImageByRfidHashDb(c.rfidHash);
+                return {
+                    ...c,
+                    imageThumbUrl: img?.thumbUrl ?? null,
+                    imageCardUrl: img?.cardUrl ?? null,
+                    imageDetailUrl: img?.detailUrl ?? null,
+                };
+            });
+
             res.json({
                 count: collectibles.length,
                 collectibles,
@@ -152,7 +188,19 @@ export function startHttpServer(): void {
                 res.status(400).json({ error: "address param is required" });
                 return;
             }
-            const collectibles = getCollectiblesByOwnerDb(addr);
+
+            const base = getCollectiblesByOwnerDb(addr);
+
+            const collectibles = base.map((c) => {
+                const img = getCollectibleImageByRfidHashDb(c.rfidHash);
+                return {
+                    ...c,
+                    imageThumbUrl: img?.thumbUrl ?? null,
+                    imageCardUrl: img?.cardUrl ?? null,
+                    imageDetailUrl: img?.detailUrl ?? null,
+                };
+            });
+
             res.json({
                 owner: addr,
                 count: collectibles.length,
@@ -232,6 +280,80 @@ export function startHttpServer(): void {
                 });
             } catch (err) {
                 logger.error(err, "GET /collectible/by-rfid-hash/:rfidHash failed");
+                res.status(500).json({ error: "Internal server error" });
+            }
+        },
+    );
+
+    /**
+     * GET /admin/rfid-hash-exists/:rfidHash
+     * Returns whether a collectible with this rfidHash already exists.
+     */
+    app.get("/admin/rfid-hash-exists/:rfidHash", (req: Request, res: Response) => {
+        try {
+            const rfidHash = (req.params.rfidHash || "").trim();
+            if (!rfidHash) {
+                res.status(400).json({ error: "rfidHash param is required" });
+                return;
+            }
+
+            const exists = collectibleExistsByRfidHashDb(rfidHash);
+
+            res.json({
+                rfidHash: rfidHash.toLowerCase(),
+                exists,
+            });
+        } catch (err) {
+            logger.error(
+                err,
+                "GET /admin/rfid-hash-exists/:rfidHash failed",
+            );
+            res.status(500).json({ error: "Internal server error" });
+        }
+    });
+
+
+    /**
+     * POST /admin/collectibles/:rfidHash/image
+     * Accepts a single image file (field name "file") and links it to the collectible.
+     */
+    app.post(
+        "/admin/collectibles/:rfidHash/image",
+        upload.single("file"),
+        (req: MulterRequest, res: Response) => {
+            try {
+                const rfidHash = (req.params.rfidHash || "").trim();
+                if (!rfidHash) {
+                    res.status(400).json({ error: "rfidHash param is required" });
+                    return;
+                }
+
+                if (!req.file) {
+                    res.status(400).json({ error: "file field is required" });
+                    return;
+                }
+
+                const relPath = `/images/${req.file.filename}`;
+                const fullUrl = `${PUBLIC_BASE_URL}${relPath}`;
+
+                // For now we use the same URL for all sizes.
+                upsertCollectibleImageDb({
+                    rfidHash: rfidHash.toLowerCase(),
+                    originalUrl: fullUrl,
+                    detailUrl: fullUrl,
+                    cardUrl: fullUrl,
+                    thumbUrl: fullUrl,
+                    width: 0,
+                    height: 0,
+                    createdAt: Date.now(),
+                });
+
+                res.json({
+                    rfidHash,
+                    url: fullUrl,
+                });
+            } catch (err) {
+                logger.error(err, "POST /admin/collectibles/:rfidHash/image failed");
                 res.status(500).json({ error: "Internal server error" });
             }
         },

@@ -12,14 +12,25 @@ export const REGISTRY_ABI = [
     "function redeemCollectible(string rfid)",
 ];
 
-// Minimal ERC721 we need for approvals + metadata
+// NFT (CollectibleNFTV1) ABI
 export const NFT_ABI = [
-    // standard ERC721
+    // ---- ERC721 standard ----
     "function approve(address to, uint256 tokenId)",
     "function getApproved(uint256 tokenId) view returns (address)",
     "function ownerOf(uint256 tokenId) view returns (address)",
-    // metadata
+
+    // ---- Metadata ----
     "function tokenURI(uint256 tokenId) view returns (string)",
+
+    // ---- Loyalty / points ----
+    // explicit getter (preferred)
+    "function getPoints(address user) view returns (uint256)",
+
+    // public mapping auto-getter (optional but handy)
+    "function loyaltyPoints(address user) view returns (uint256)",
+
+    // tier helper
+    "function getTier(address user) view returns (string)",
 ];
 
 // Marketplace functions we’ll call

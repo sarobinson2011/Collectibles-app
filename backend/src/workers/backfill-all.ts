@@ -1,9 +1,12 @@
+// src/workers/backfill-all.ts
+
 import { join } from "path";
-import { JsonRpcProvider, Interface, type Filter } from "ethers";
+import { JsonRpcProvider, Interface, type Filter, type Log } from "ethers";
 import { env } from "../config/env.js";
 import { makeJsonl } from "../infra/files.js";
 import { logger } from "../infra/logger.js";
 import { REGISTRY_ABI, NFT_ABI, MARKET_ABI } from "../contracts/abi.js";
+import { applyEventToState, type IndexedEvent } from "../domain/state.js";
 
 const http = new JsonRpcProvider(env.RPC_HTTP_URL, env.CHAIN_ID);
 
@@ -12,7 +15,9 @@ const appendNft = makeJsonl(join(env.LOG_DIR, "nft_log.jsonl"));
 const appendMarket = makeJsonl(join(env.LOG_DIR, "market_log.jsonl"));
 const appendCombined = makeJsonl(join(env.LOG_DIR, "collectible_log.jsonl"));
 
-function sleep(ms: number) { return new Promise(res => setTimeout(res, ms)); }
+function sleep(ms: number) {
+    return new Promise((res) => setTimeout(res, ms));
+}
 
 function jsonSafe(value: any): any {
     if (typeof value === "bigint") return value.toString();
@@ -25,116 +30,238 @@ function jsonSafe(value: any): any {
     return value;
 }
 
+type TargetName = "registry" | "nft" | "market";
+
 type Target = {
-    name: "registry" | "nft" | "market";
-    address: string;
+    name: TargetName;
+    address: string; // checksummed or not, we normalize to lowercase for lookup
     iface: Interface;
     append: (obj: unknown) => void;
 };
 
 const targets: Target[] = [
-    { name: "registry", address: env.REGISTRY_ADDRESS, iface: new Interface(REGISTRY_ABI as any), append: appendRegistry },
-    { name: "nft", address: env.NFT_ADDRESS, iface: new Interface(NFT_ABI as any), append: appendNft },
-    { name: "market", address: env.MARKET_ADDRESS, iface: new Interface(MARKET_ABI as any), append: appendMarket },
+    {
+        name: "registry",
+        address: env.REGISTRY_ADDRESS,
+        iface: new Interface(REGISTRY_ABI as any),
+        append: appendRegistry,
+    },
+    {
+        name: "nft",
+        address: env.NFT_ADDRESS,
+        iface: new Interface(NFT_ABI as any),
+        append: appendNft,
+    },
+    {
+        name: "market",
+        address: env.MARKET_ADDRESS,
+        iface: new Interface(MARKET_ABI as any),
+        append: appendMarket,
+    },
 ];
 
-/** eth_getLogs with retries, backoff, and polite pacing */
-async function getLogsWithRetry(filter: Filter, attempt = 1): Promise<readonly any[]> {
-    // polite global pacing (helps avoid -32005)
-    await sleep(250);
+const targetByAddress = new Map<string, Target>(
+    targets.map((t) => [t.address.toLowerCase(), t]),
+);
+const addressList = targets.map((t) => t.address);
+
+// Tuneables (safe defaults)
+const STEP = 2_000; // block chunk size
+const AUTO_FIND_MAX_LOOKBACK = 200_000; // how far back we try to find first logs
+const AUTO_FIND_STRIDE = 10_000; // backward jump size while searching
+const PACE_MS = 200; // polite pacing between provider calls
+
+async function getLogsWithRetry(filter: Filter, attempt = 1): Promise<readonly Log[]> {
+    await sleep(PACE_MS);
 
     try {
         return await http.getLogs(filter);
     } catch (err: any) {
-        const msg = String(err?.message ?? "");
+        const msg = String(err?.message ?? "").toLowerCase();
         const code = String(err?.code ?? "");
 
-        // Infura rate limit or transient provider errors
-        const isRateLimited = code === "BAD_DATA" && msg.includes("Too Many Requests");
-        const isServerBusy = code === "SERVER_ERROR" || msg.includes("timeout") || msg.includes("ECONNRESET");
+        const isRateLimited =
+            msg.includes("too many requests") ||
+            (code === "BAD_DATA" && msg.includes("too many requests"));
 
-        if ((isRateLimited || isServerBusy) && attempt <= 6) {
-            // exponential backoff + jitter
-            const base = 600 * Math.pow(2, attempt - 1); // 0.6s, 1.2s, 2.4s, 4.8s, 9.6s, 19.2s
+        const isBusy =
+            code === "SERVER_ERROR" ||
+            msg.includes("timeout") ||
+            msg.includes("econnreset") ||
+            msg.includes("etimedout");
+
+        if ((isRateLimited || isBusy) && attempt <= 6) {
+            const base = 600 * Math.pow(2, attempt - 1);
             const jitter = Math.floor(Math.random() * 300);
             const wait = base + jitter;
-            logger.warn({ attempt, wait, fromBlock: (filter as any).fromBlock, toBlock: (filter as any).toBlock }, "rate-limited or busy, backing off");
+            logger.warn(
+                {
+                    attempt,
+                    wait,
+                    fromBlock: (filter as any).fromBlock,
+                    toBlock: (filter as any).toBlock,
+                },
+                "rate-limited or busy, backing off",
+            );
             await sleep(wait);
             return getLogsWithRetry(filter, attempt + 1);
         }
 
-        // If we ever hit Infura’s “your range returned too many logs” (also -32005 in other contexts),
-        // reduce the caller's chunk size (handled by the caller by catching and splitting the range).
-
+        // If a provider complains about range size / response size, the caller can split ranges.
         throw err;
     }
 }
 
-/** Backfill a single address over [fromBlock, toBlock], auto-splitting the range if needed */
-async function backfillRange(t: Target, fromBlock: number, toBlock: number): Promise<void> {
-    // defensive: never invert
-    if (toBlock < fromBlock) return;
+function buildIndexedEvent(t: Target, log: Log): IndexedEvent | null {
+    const parsed = t.iface.parseLog(log);
+    if (!parsed) return null;
 
-    const filter: Filter = { address: t.address, fromBlock, toBlock };
+    return {
+        t: Date.now(),
+        contract: t.name,
+        event: parsed.name,
+        args: jsonSafe(parsed.args),
+        tx: log.transactionHash,
+        block: log.blockNumber,
+        logIndex: (log as any).index ?? (log as any).logIndex ?? 0,
+    };
+}
 
-    try {
+/**
+ * Find a reasonable start block automatically:
+ * - scan backwards in strides until we find ANY logs for our addresses
+ * - then do a small linear refine to the earliest block in that window with logs
+ *
+ * This avoids guessing deployment blocks manually.
+ */
+async function autoFindStartBlock(latest: number): Promise<number> {
+    const minBlock = Math.max(0, latest - AUTO_FIND_MAX_LOOKBACK);
+
+    let high = latest;
+    let low = Math.max(minBlock, latest - AUTO_FIND_STRIDE);
+
+    logger.info(
+        { latest, minBlock, stride: AUTO_FIND_STRIDE, maxLookback: AUTO_FIND_MAX_LOOKBACK },
+        "auto-find start block: searching backwards for first logs",
+    );
+
+    // 1) stride backwards until we find any logs or hit minBlock
+    while (true) {
+        const filter: Filter = {
+            address: addressList,
+            fromBlock: low,
+            toBlock: high,
+        };
+
         const logs = await getLogsWithRetry(filter);
-        logger.info({ name: t.name, fromBlock, toBlock, count: logs.length }, "backfill-chunk");
-
-        for (const log of logs) {
-            let parsed: any | null = null;
-            try { parsed = t.iface.parseLog(log); } catch { parsed = null; }
-            if (parsed !== null) {
-                const record = {
-                    t: Date.now(),
-                    contract: t.name,
-                    event: parsed.name,
-                    args: jsonSafe(parsed.args),
-                    tx: log.transactionHash,
-                    block: log.blockNumber,
-                    logIndex: log.index,
-                };
-                t.append(record);
-                appendCombined(record);
-            }
+        if (logs.length > 0) {
+            logger.info({ foundIn: { low, high }, count: logs.length }, "auto-find: found logs window");
+            break;
         }
+
+        if (low <= minBlock) {
+            logger.warn(
+                { minBlock, latest },
+                "auto-find: found no logs within max lookback; starting at minBlock",
+            );
+            return minBlock;
+        }
+
+        high = low - 1;
+        low = Math.max(minBlock, high - AUTO_FIND_STRIDE + 1);
+    }
+
+    // 2) refine: walk forward in smaller chunks to find earliest block with logs
+    // (We keep this simple and provider-friendly.)
+    let candidate = low;
+    const refineStep = 1_000;
+
+    while (candidate <= high) {
+        const to = Math.min(candidate + refineStep - 1, high);
+        const filter: Filter = { address: addressList, fromBlock: candidate, toBlock: to };
+        const logs = await getLogsWithRetry(filter);
+
+        if (logs.length > 0) {
+            const earliest = Math.min(...logs.map((l) => l.blockNumber));
+            logger.info({ startBlock: earliest }, "auto-find: earliest log block found");
+            return earliest;
+        }
+
+        candidate = to + 1;
+    }
+
+    // Fallback (shouldn’t happen if we found logs in the window)
+    return low;
+}
+
+/** Backfill logs over [fromBlock, toBlock] for ALL targets in one getLogs call */
+async function backfillChunk(fromBlock: number, toBlock: number): Promise<void> {
+    const filter: Filter = { address: addressList, fromBlock, toBlock };
+
+    let logs: readonly Log[] = [];
+    try {
+        logs = await getLogsWithRetry(filter);
     } catch (err: any) {
-        const msg = String(err?.message ?? "");
-        const code = String(err?.code ?? "");
-        // Split range on “Too Many Requests” or “too much data” style failures
-        if ((code === "BAD_DATA" && msg.includes("Too Many Requests")) || msg.includes("response for request")) {
+        const msg = String(err?.message ?? "").toLowerCase();
+
+        // Split range if provider complains about response size / range too wide
+        const shouldSplit =
+            msg.includes("query returned more than") ||
+            msg.includes("too many results") ||
+            msg.includes("log response size") ||
+            msg.includes("block range is too wide") ||
+            msg.includes("response for request");
+
+        if (shouldSplit && toBlock > fromBlock) {
             const mid = Math.floor((fromBlock + toBlock) / 2);
-            if (mid === fromBlock || mid === toBlock) {
-                // cannot split further; give up on this tiny range
-                logger.error({ name: t.name, fromBlock, toBlock, msg }, "unsplittable range failed");
-                return;
-            }
-            // recurse on halves
-            await backfillRange(t, fromBlock, mid);
-            await backfillRange(t, mid + 1, toBlock);
+            await backfillChunk(fromBlock, mid);
+            await backfillChunk(mid + 1, toBlock);
             return;
         }
 
-        logger.error({ name: t.name, fromBlock, toBlock, err }, "backfill-range error");
+        logger.error({ fromBlock, toBlock, err }, "backfill-chunk failed");
+        return;
+    }
+
+    logger.info({ fromBlock, toBlock, count: logs.length }, "backfill-chunk");
+
+    if (logs.length === 0) return;
+
+    // Parse to IndexedEvents, dispatch by log.address -> correct iface
+    const events: IndexedEvent[] = [];
+    for (const log of logs) {
+        const addr = (log.address ?? "").toLowerCase();
+        const t = targetByAddress.get(addr);
+        if (!t) continue;
+
+        const ev = buildIndexedEvent(t, log);
+        if (!ev) continue;
+
+        // JSONL append (optional but kept)
+        t.append(ev);
+        appendCombined(ev);
+
+        events.push(ev);
+    }
+
+    // Apply in strict order
+    events.sort((a, b) => (a.block !== b.block ? a.block - b.block : a.logIndex - b.logIndex));
+    for (const ev of events) {
+        applyEventToState(ev);
     }
 }
 
 (async () => {
     const latest = await http.getBlockNumber();
 
-    // Tune these for your true deployment height for best performance.
-    // Start with a modest lookback to avoid hammering the provider.
-    const lookback = 120_000;
-    const start = Math.max(0, latest - lookback);
+    // Auto-pick start block based on where your contracts actually have logs
+    const start = await autoFindStartBlock(latest);
 
-    // Start with a smaller chunk; the splitter above will subdivide on demand.
-    const step = 1_500;
+    logger.info({ start, latest, step: STEP }, "backfill starting");
 
-    for (let from = start; from <= latest; from += step) {
-        const to = Math.min(from + step - 1, latest);
-        for (const t of targets) {
-            await backfillRange(t, from, to);
-        }
+    for (let from = start; from <= latest; from += STEP) {
+        const to = Math.min(from + STEP - 1, latest);
+        await backfillChunk(from, to);
     }
 
     logger.info({ start, latest }, "backfill-complete");

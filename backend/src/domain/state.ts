@@ -5,6 +5,7 @@ import {
     upsertCollectibleDb,
     insertEventDb,
     type ActivityEvent,
+    getCollectibleImageByRfidHashDb,
 } from "../infra/db.js";
 
 // ------------------------
@@ -64,6 +65,13 @@ export type Collectible = {
     lastUpdateTx: string;
 };
 
+// NEW: Collectible shape including image URLs for UI
+export type CollectibleWithImage = Collectible & {
+    imageThumbUrl: string | null;
+    imageCardUrl: string | null;
+    imageDetailUrl: string | null;
+};
+
 const collectiblesByRfidHash = new Map<string, Collectible>();
 const tokenIdToRfidHash = new Map<string, string>();
 
@@ -100,6 +108,35 @@ export function getCollectiblesByOwner(owner: string): Collectible[] {
     return getAllCollectibles().filter(
         (c) => c.owner && c.owner.toLowerCase() === needle,
     );
+}
+
+// NEW: helpers that include image URLs from collectible_images table
+
+export function getAllCollectiblesWithImages(): CollectibleWithImage[] {
+    return getAllCollectibles().map((c) => {
+        const img = getCollectibleImageByRfidHashDb(c.rfidHash);
+        return {
+            ...c,
+            imageThumbUrl: img?.thumbUrl ?? null,
+            imageCardUrl: img?.cardUrl ?? null,
+            imageDetailUrl: img?.detailUrl ?? null,
+        };
+    });
+}
+
+export function getCollectiblesByOwnerWithImages(
+    owner: string,
+): CollectibleWithImage[] {
+    const base = getCollectiblesByOwner(owner);
+    return base.map((c) => {
+        const img = getCollectibleImageByRfidHashDb(c.rfidHash);
+        return {
+            ...c,
+            imageThumbUrl: img?.thumbUrl ?? null,
+            imageCardUrl: img?.cardUrl ?? null,
+            imageDetailUrl: img?.detailUrl ?? null,
+        };
+    });
 }
 
 // ------------------------

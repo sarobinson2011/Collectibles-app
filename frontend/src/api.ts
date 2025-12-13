@@ -26,6 +26,11 @@ export type Collectible = {
     lastEvent: string;
     lastUpdateBlock: number;
     lastUpdateTx: string;
+
+    // image URLs from backend (can be null if no image yet)
+    imageThumbUrl?: string | null;
+    imageCardUrl?: string | null;
+    imageDetailUrl?: string | null;
 };
 
 export type ActivityEvent = {
@@ -44,11 +49,21 @@ export type ActivityEvent = {
     createdAt: number;
 };
 
+/**
+ * Details shape returned by the backend for a single collectible.
+ * (We extend this with tokenUri / metadata / imageUrl for the detail
+ *  page and image thumbnails.)
+ */
 export type CollectibleDetails = {
     tokenId?: string;
     rfidHash?: string;
     collectible: Collectible | null;
     events: ActivityEvent[];
+
+    // enriched fields from backend
+    tokenUri: string | null;
+    metadata: any | null;
+    imageUrl: string | null;
 };
 
 /**
@@ -103,12 +118,16 @@ type ActivityResponse = {
     events: ActivityEvent[];
 };
 
-export async function fetchActivity(
-    owner: string,
-): Promise<ActivityResponse> {
+export async function fetchActivity(owner: string): Promise<ActivityResponse> {
     const data = await getJSON<ActivityResponse>(`/activity/${owner}`);
     return data;
 }
+
+/**
+ * Backend detail responses:
+ *  - /collectible/by-token/:tokenId      -> includes tokenId
+ *  - /collectible/by-rfid-hash/:rfidHash -> includes rfidHash
+ */
 
 type CollectibleByTokenResponse = CollectibleDetails & {
     tokenId: string;
@@ -134,4 +153,42 @@ export async function fetchCollectibleByRfidHash(
         `/collectible/by-rfid-hash/${rfidHash}`,
     );
     return data;
+}
+
+/**
+ * Convenience helper used by AllCollectiblesPage for thumbnails.
+ * Just an alias around fetchCollectibleByTokenId.
+ */
+export async function fetchCollectibleDetails(
+    tokenId: string,
+): Promise<CollectibleDetails> {
+    return fetchCollectibleByTokenId(tokenId);
+}
+
+/**
+ * Upload an image for a given collectible RFID hash.
+ * Uses the backend endpoint: POST /admin/collectibles/:rfidHash/image
+ */
+export async function uploadCollectibleImage(
+    rfidHash: string,
+    file: File,
+): Promise<{ rfidHash: string; url: string }> {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const res = await fetch(
+        `${API_BASE_URL}/admin/collectibles/${rfidHash}/image`,
+        {
+            method: "POST",
+            body: formData,
+        },
+    );
+
+    if (!res.ok) {
+        throw new Error(
+            `Image upload failed with status ${res.status}: ${await res.text()}`,
+        );
+    }
+
+    return res.json() as Promise<{ rfidHash: string; url: string }>;
 }
