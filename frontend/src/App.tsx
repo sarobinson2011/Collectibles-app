@@ -51,7 +51,7 @@ function Layout() {
                     Wrong network
                   </span>
                 )}
-                <span>
+                <span className="wallet-address-strong">
                   {address.slice(0, 6)}…{address.slice(-4)}
                 </span>
               </>

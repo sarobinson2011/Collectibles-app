@@ -147,3 +147,18 @@
   font-size: 0.8rem;
   color: #a0a4aa;
 }
+
+/* =========================================
+   Header / Nav
+   ========================================= */
+
+.app-title {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.wallet-address-strong {
+  font-weight: 800;
+  /* match app-title weight */
+  letter-spacing: -0.02em;
+}

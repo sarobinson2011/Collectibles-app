@@ -23,14 +23,18 @@ export const NFT_ABI = [
     "function tokenURI(uint256 tokenId) view returns (string)",
 
     // ---- Loyalty / points ----
-    // explicit getter (preferred)
     "function getPoints(address user) view returns (uint256)",
-
-    // public mapping auto-getter (optional but handy)
     "function loyaltyPoints(address user) view returns (uint256)",
-
-    // tier helper
     "function getTier(address user) view returns (string)",
+
+    // ---- Thresholds (future-proof for progress UI) ----
+    "function silverThreshold() view returns (uint256)",
+    "function goldThreshold() view returns (uint256)",
+
+    // ---- Events (needed for live updates) ----
+    "event PointsAdded(address indexed user, uint256 points)",
+    "event AdminSetPoints(address indexed user, uint256 points)",
+    "event TierThresholdsUpdated(uint256 silver, uint256 gold)",
 ];
 
 // Marketplace functions we’ll call

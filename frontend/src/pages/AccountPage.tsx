@@ -1,6 +1,6 @@
 // src/pages/AccountPage.tsx
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { parseUnits, BrowserProvider, Contract } from "ethers";
 import { useOwnerCollectibles } from "../hooks/useCollectibles";
@@ -13,7 +13,7 @@ import {
 } from "../api";
 import { useWallet } from "../eth/wallet";
 import { useSignerContracts } from "../eth/contracts";
-import { NFT_ADDRESS } from "../eth/config";
+import { NFT_ADDRESS, ADMIN_ADDRESS } from "../eth/config";
 import { NFT_ABI } from "../eth/abis";
 
 type Status = "idle" | "loading" | "success" | "error";
@@ -41,39 +41,109 @@ function tierTone(tier: string): TierTone {
     return "bronze";
 }
 
-function TierBadge({ tier }: { tier: string }) {
+function tierTheme(tier: string) {
     const tone = tierTone(tier);
 
-    let bg = "rgba(251, 146, 60, 0.14)"; // bronze
-    let border = "rgba(251, 146, 60, 0.55)";
-    let color = "#fed7aa";
+    // bronze defaults
+    let badgeBg = "rgba(251, 146, 60, 0.14)";
+    let badgeBorder = "rgba(251, 146, 60, 0.55)";
+    let badgeColor = "#fed7aa";
+
+    // progress colors (same family)
+    let barTrack = "rgba(148, 163, 184, 0.10)";
+    let barFill = "rgba(251, 146, 60, 0.70)";
 
     if (tone === "silver") {
-        bg = "rgba(148, 163, 184, 0.14)";
-        border = "rgba(148, 163, 184, 0.55)";
-        color = "#e5e7eb";
+        badgeBg = "rgba(148, 163, 184, 0.14)";
+        badgeBorder = "rgba(148, 163, 184, 0.55)";
+        badgeColor = "#e5e7eb";
+        barFill = "rgba(148, 163, 184, 0.80)";
     } else if (tone === "gold") {
-        bg = "rgba(234, 179, 8, 0.14)";
-        border = "rgba(234, 179, 8, 0.55)";
-        color = "#fde68a";
+        badgeBg = "rgba(234, 179, 8, 0.14)";
+        badgeBorder = "rgba(234, 179, 8, 0.55)";
+        badgeColor = "#fde68a";
+        barFill = "rgba(234, 179, 8, 0.85)";
     }
 
-    const label = tone === "bronze" ? "Bronze" : tone === "silver" ? "Silver" : "Gold";
+    return { badgeBg, badgeBorder, badgeColor, barTrack, barFill };
+}
+
+function TierBadge({ tier }: { tier: string }) {
+    const { badgeBg, badgeBorder, badgeColor } = tierTheme(tier);
+    const label =
+        tierTone(tier) === "gold"
+            ? "Gold"
+            : tierTone(tier) === "silver"
+                ? "Silver"
+                : "Bronze";
 
     return (
         <span
             style={{
                 padding: "0.25rem 0.6rem",
                 borderRadius: "999px",
-                border: `1px solid ${border}`,
-                backgroundColor: bg,
-                color,
+                border: `1px solid ${badgeBorder}`,
+                backgroundColor: badgeBg,
+                color: badgeColor,
                 fontSize: "0.8rem",
                 fontWeight: 700,
                 letterSpacing: "0.01em",
                 whiteSpace: "nowrap",
             }}
             title="Current loyalty tier"
+        >
+            {label}
+        </span>
+    );
+}
+
+function clamp(n: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, n));
+}
+
+function StatusTag({
+    label,
+    tone,
+}: {
+    label: string;
+    tone: "danger" | "warning" | "info" | "muted";
+}) {
+    let bg = "rgba(148, 163, 184, 0.10)";
+    let border = "rgba(148, 163, 184, 0.45)";
+    let color = "#e5e7eb";
+
+    if (tone === "danger") {
+        bg = "rgba(248, 113, 113, 0.12)";
+        border = "rgba(248, 113, 113, 0.55)";
+        color = "#fecaca";
+    } else if (tone === "warning") {
+        bg = "rgba(234, 179, 8, 0.12)";
+        border = "rgba(234, 179, 8, 0.55)";
+        color = "#fde68a";
+    } else if (tone === "info") {
+        bg = "rgba(56, 189, 248, 0.12)";
+        border = "rgba(56, 189, 248, 0.55)";
+        color = "#bae6fd";
+    }
+
+    return (
+        <span
+            style={{
+                display: "inline-flex",
+                alignItems: "center",
+                padding: "0.2rem 0.5rem",
+                borderRadius: "999px",
+                border: `1px solid ${border}`,
+                backgroundColor: bg,
+                color,
+                fontSize: "0.75rem",
+                fontWeight: 700,
+                letterSpacing: "0.02em",
+                marginLeft: "0.5rem",
+                verticalAlign: "middle",
+                whiteSpace: "nowrap",
+            }}
+            title="Status"
         >
             {label}
         </span>
@@ -87,6 +157,12 @@ export function AccountPage() {
 
     const { getRegistry, getNft, getMarket } = useSignerContracts();
 
+    const isAdmin = useMemo(() => {
+        const a = (address ?? "").trim().toLowerCase();
+        const admin = (ADMIN_ADDRESS ?? "").trim().toLowerCase();
+        return !!a && !!admin && a === admin;
+    }, [address]);
+
     // Per-collectible listing prices (keyed by nft+tokenId)
     const [priceByKey, setPriceByKey] = useState<Record<string, string>>({});
     const [listedMap, setListedMap] = useState<Record<string, boolean>>({});
@@ -97,11 +173,17 @@ export function AccountPage() {
     const [activityError, setActivityError] = useState<string | null>(null);
     const [showActivity, setShowActivity] = useState<boolean>(false);
 
-    // Loyalty state (points + tier)
+    // Loyalty state (points + tier + thresholds)
     const [loyaltyStatus, setLoyaltyStatus] = useState<LoyaltyStatus>("idle");
     const [points, setPoints] = useState<string>("0");
     const [tier, setTier] = useState<string>("Bronze");
+    const [silverThreshold, setSilverThreshold] = useState<string>("1000");
+    const [goldThreshold, setGoldThreshold] = useState<string>("5000");
     const [loyaltyError, setLoyaltyError] = useState<string | null>(null);
+
+    const canLoadLoyalty = useMemo(() => {
+        return !!(hasProvider && provider && address && !wrongNetwork);
+    }, [hasProvider, provider, address, wrongNetwork]);
 
     function rowKey(c: Collectible): string {
         const tokenPart = c.tokenId ?? "";
@@ -157,7 +239,7 @@ export function AccountPage() {
             setActivityStatus("loading");
             setActivityError(null);
             try {
-                const res = await fetchActivity(addr); // { events: ActivityEvent[] }
+                const res = await fetchActivity(addr);
                 if (cancelled) return;
                 setActivity(res.events);
                 setActivityStatus("success");
@@ -179,56 +261,132 @@ export function AccountPage() {
         };
     }, [address]);
 
-    // Load loyalty points + tier (polling for now; we’ll switch to event-driven next)
+    async function getRegistryWithSigner() {
+        return getRegistry();
+    }
+
+    // ---- Loyalty: fetch + live updates ----
+    async function refreshLoyalty(nft: Contract, user: string) {
+        const [pts, tr, s, g] = await Promise.all([
+            nft.getPoints(user),
+            nft.getTier(user),
+            nft.silverThreshold(),
+            nft.goldThreshold(),
+        ]);
+
+        setPoints(typeof pts === "bigint" ? pts.toString() : String(pts));
+        setTier(String(tr));
+        setSilverThreshold(typeof s === "bigint" ? s.toString() : String(s));
+        setGoldThreshold(typeof g === "bigint" ? g.toString() : String(g));
+    }
+
     useEffect(() => {
         let cancelled = false;
+        setLoyaltyError(null);
 
-        async function loadLoyalty() {
-            setLoyaltyError(null);
+        if (!canLoadLoyalty) {
+            setLoyaltyStatus("idle");
+            setPoints("0");
+            setTier("Bronze");
+            setSilverThreshold("1000");
+            setGoldThreshold("5000");
+            return;
+        }
 
-            if (!hasProvider || !provider || !address || wrongNetwork) {
-                setLoyaltyStatus("idle");
-                setPoints("0");
-                setTier("Bronze");
-                return;
-            }
+        const p = provider as BrowserProvider;
+        const nft = new Contract(NFT_ADDRESS, NFT_ABI, p);
+        const user = address as string;
 
+        async function initialLoad() {
             setLoyaltyStatus("loading");
-
             try {
-                const p = provider as BrowserProvider;
-                const nft = new Contract(NFT_ADDRESS, NFT_ABI, p);
-
-                const [pts, tr] = await Promise.all([
-                    nft.getPoints(address),
-                    nft.getTier(address),
-                ]);
-
+                await refreshLoyalty(nft, user);
                 if (cancelled) return;
-
-                setPoints(typeof pts === "bigint" ? pts.toString() : String(pts));
-                setTier(String(tr));
                 setLoyaltyStatus("success");
             } catch (err: any) {
                 if (cancelled) return;
                 console.error("failed to load loyalty", err);
                 setLoyaltyStatus("error");
-                setLoyaltyError(err?.shortMessage ?? err?.message ?? "Failed to load loyalty");
+                setLoyaltyError(
+                    err?.shortMessage ?? err?.message ?? "Failed to load loyalty",
+                );
             }
         }
 
-        void loadLoyalty();
-        const interval = setInterval(loadLoyalty, 15_000);
+        void initialLoad();
+
+        // Live updates: listen for points changes affecting THIS user
+        const onPointsAdded = (evUser: string) => {
+            if (!evUser) return;
+            if (evUser.toLowerCase() !== user.toLowerCase()) return;
+            void refreshLoyalty(nft, user);
+        };
+
+        const onAdminSetPoints = (evUser: string) => {
+            if (!evUser) return;
+            if (evUser.toLowerCase() !== user.toLowerCase()) return;
+            void refreshLoyalty(nft, user);
+        };
+
+        const onThresholdsUpdated = () => {
+            void refreshLoyalty(nft, user);
+        };
+
+        nft.on("PointsAdded", onPointsAdded);
+        nft.on("AdminSetPoints", onAdminSetPoints);
+        nft.on("TierThresholdsUpdated", onThresholdsUpdated);
+
+        // Optional safety poll (slow) in case the provider misses events
+        const safety = setInterval(() => {
+            void refreshLoyalty(nft, user);
+        }, 120_000);
 
         return () => {
             cancelled = true;
-            clearInterval(interval);
+            clearInterval(safety);
+            try {
+                nft.off("PointsAdded", onPointsAdded);
+                nft.off("AdminSetPoints", onAdminSetPoints);
+                nft.off("TierThresholdsUpdated", onThresholdsUpdated);
+            } catch {
+                // ignore
+            }
         };
-    }, [hasProvider, provider, address, wrongNetwork]);
+    }, [canLoadLoyalty, provider, address]);
 
-    async function getRegistryWithSigner() {
-        return getRegistry();
-    }
+    // ---- Tier progress bar numbers ----
+    const pointsNum = Number(points || "0");
+    const silverNum = Number(silverThreshold || "1000");
+    const goldNum = Number(goldThreshold || "5000");
+
+    const nextTarget =
+        tierTone(tier) === "gold"
+            ? null
+            : tierTone(tier) === "silver"
+                ? goldNum
+                : silverNum;
+
+    const prevTarget =
+        tierTone(tier) === "gold"
+            ? goldNum
+            : tierTone(tier) === "silver"
+                ? silverNum
+                : 0;
+
+    const progressPct = (() => {
+        if (nextTarget == null) return 100;
+        const denom = Math.max(1, nextTarget - prevTarget);
+        const num = pointsNum - prevTarget;
+        return clamp((num / denom) * 100, 0, 100);
+    })();
+
+    const progressLabel =
+        nextTarget == null
+            ? "Max tier"
+            : `${pointsNum.toLocaleString()} / ${nextTarget.toLocaleString()} → ${tierTone(tier) === "silver" ? "Gold" : "Silver"
+            }`;
+
+    const { barTrack, barFill } = tierTheme(tier);
 
     async function handleTransfer(c: Collectible) {
         try {
@@ -294,7 +452,6 @@ export function AccountPage() {
 
             let priceRaw: bigint;
             try {
-                // Assuming USDC 6 decimals in your market
                 priceRaw = parseUnits(priceStr, 6);
             } catch {
                 alert("Invalid price format. Example: 1.0 or 0.5");
@@ -304,19 +461,16 @@ export function AccountPage() {
             const nft = await getNft();
             const market = await getMarket();
 
-            // 1) Approve marketplace for this tokenId
             const approveTx = await nft.approve(market.target, tokenId);
             alert(`Approve tx sent: ${approveTx.hash}`);
             await approveTx.wait();
             alert("Approve confirmed.");
 
-            // 2) List on marketplace
             const listTx = await market.listCollectible(NFT_ADDRESS, tokenId, priceRaw);
             alert(`List tx sent: ${listTx.hash}`);
             await listTx.wait();
             alert("Listing confirmed. The backend will pick up the event shortly.");
 
-            // Optional: clear the price field for this row
             setPriceByKey((prev) => {
                 const copy = { ...prev };
                 delete copy[key];
@@ -396,11 +550,60 @@ export function AccountPage() {
                                         fontSize: "1.8rem",
                                         fontWeight: 800,
                                         letterSpacing: "-0.02em",
+                                        lineHeight: 1.1,
                                     }}
                                 >
-                                    {loyaltyStatus === "loading" ? "…" : points}
+                                    {points}
                                 </div>
+                                {loyaltyStatus === "loading" && (
+                                    <div
+                                        style={{
+                                            marginTop: "0.2rem",
+                                            fontSize: "0.8rem",
+                                            opacity: 0.6,
+                                        }}
+                                    >
+                                        Updating…
+                                    </div>
+                                )}
                             </div>
+                        </div>
+                    </div>
+
+                    {/* Tier progress */}
+                    <div style={{ marginTop: "0.85rem" }}>
+                        <div
+                            style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "baseline",
+                                gap: "1rem",
+                                fontSize: "0.85rem",
+                                opacity: 0.8,
+                                marginBottom: "0.35rem",
+                            }}
+                        >
+                            <span>Progress</span>
+                            <span style={{ opacity: 0.9 }}>{progressLabel}</span>
+                        </div>
+
+                        <div
+                            style={{
+                                height: "10px",
+                                borderRadius: "999px",
+                                background: barTrack,
+                                border: "1px solid #1f2937",
+                                overflow: "hidden",
+                            }}
+                            title={progressLabel}
+                        >
+                            <div
+                                style={{
+                                    height: "100%",
+                                    width: `${progressPct}%`,
+                                    background: barFill,
+                                }}
+                            />
                         </div>
                     </div>
 
@@ -432,7 +635,7 @@ export function AccountPage() {
                             <tr>
                                 <th>Token ID</th>
                                 <th>RFID</th>
-                                <th>Burned</th>
+                                {isAdmin && <th>Burned</th>}
                                 <th>Redeemed</th>
                                 <th>Listed</th>
                                 <th>List price (USDC)</th>
@@ -457,10 +660,15 @@ export function AccountPage() {
                                                 "?"
                                             )}
                                         </td>
+
                                         <td>{c.rfid ?? "—"}</td>
-                                        <td>{c.burned ? "Yes" : "No"}</td>
+
+                                        {isAdmin && <td>{c.burned ? "Yes" : "No"}</td>}
+
                                         <td>{c.redeemed ? "Yes" : "No"}</td>
+
                                         <td>{isListed ? "Yes" : "No"}</td>
+
                                         <td>
                                             <input
                                                 type="text"
@@ -471,6 +679,7 @@ export function AccountPage() {
                                                 disabled={disabledBase || isListed}
                                             />
                                         </td>
+
                                         <td>
                                             <button
                                                 disabled={disabledBase}
@@ -479,6 +688,7 @@ export function AccountPage() {
                                             >
                                                 Transfer
                                             </button>
+
                                             <button
                                                 disabled={disabledBase}
                                                 onClick={() => void handleRedeem(c)}
@@ -486,6 +696,7 @@ export function AccountPage() {
                                             >
                                                 Redeem
                                             </button>
+
                                             <button
                                                 disabled={
                                                     disabledBase ||
@@ -498,6 +709,17 @@ export function AccountPage() {
                                             >
                                                 List
                                             </button>
+
+                                            {/* Helpful status labels next to disabled actions */}
+                                            {c.redeemed && (
+                                                <StatusTag label="REDEEMED" tone="warning" />
+                                            )}
+                                            {!c.redeemed && c.burned && (
+                                                <StatusTag label="BURNED" tone="danger" />
+                                            )}
+                                            {!c.redeemed && !c.burned && isListed && (
+                                                <StatusTag label="LISTED" tone="info" />
+                                            )}
                                         </td>
                                     </tr>
                                 );
@@ -572,10 +794,7 @@ export function AccountPage() {
                         )}
 
                         {activityStatus === "success" && activity.length > 0 && (
-                            <div
-                                className="table-wrapper"
-                                style={{ marginTop: "0.75rem" }}
-                            >
+                            <div className="table-wrapper" style={{ marginTop: "0.75rem" }}>
                                 <table className="listing-table">
                                     <thead>
                                         <tr>
@@ -592,9 +811,7 @@ export function AccountPage() {
                                     </thead>
                                     <tbody>
                                         {activity.map((ev) => {
-                                            const when = new Date(
-                                                ev.createdAt,
-                                            ).toLocaleString();
+                                            const when = new Date(ev.createdAt).toLocaleString();
                                             const from = ev.seller ?? null;
                                             const to = ev.buyer ?? ev.owner ?? null;
 
@@ -609,8 +826,7 @@ export function AccountPage() {
                                                     <td>{from ?? "—"}</td>
                                                     <td>{to ?? "—"}</td>
                                                     <td title={ev.tx}>
-                                                        {ev.tx.slice(0, 10)}…
-                                                        {ev.tx.slice(-6)}
+                                                        {ev.tx.slice(0, 10)}…{ev.tx.slice(-6)}
                                                     </td>
                                                 </tr>
                                             );
