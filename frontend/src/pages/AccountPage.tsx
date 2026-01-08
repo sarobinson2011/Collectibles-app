@@ -13,7 +13,7 @@ import {
 } from "../api";
 import { useWallet } from "../eth/wallet";
 import { useSignerContracts } from "../eth/contracts";
-import { NFT_ADDRESS, ADMIN_ADDRESS } from "../eth/config";
+import { NFT_ADDRESS, ADMIN_ADDRESS, REGISTRY_ADDRESS } from "../eth/config";
 import { NFT_ABI } from "../eth/abis";
 
 type Status = "idle" | "loading" | "success" | "error";
@@ -265,6 +265,12 @@ export function AccountPage() {
         return getRegistry();
     }
 
+    async function getNFTWithSigner() {
+        if (!provider) throw new Error("No wallet provider");
+        const signer = await provider.getSigner();
+        return new Contract(NFT_ADDRESS, NFT_ABI, signer);
+    }
+
     // ---- Loyalty: fetch + live updates ----
     async function refreshLoyalty(nft: Contract, user: string) {
         const [pts, tr, s, g] = await Promise.all([
@@ -399,7 +405,17 @@ export function AccountPage() {
             if (!newOwner) return;
 
             const registry = await getRegistryWithSigner();
+            const nft = await getNFTWithSigner();
 
+            // Step 1: Approve the Registry to transfer the NFT
+            console.log("Step 1: Approving Registry to transfer NFT...");
+            const approveTx = await nft.approve(REGISTRY_ADDRESS, c.tokenId);
+            alert(`Approval tx sent: ${approveTx.hash}. Waiting for confirmation...`);
+            await approveTx.wait();
+            alert("Registry approved! Now transferring...");
+
+            // Step 2: Transfer via Registry
+            console.log("Step 2: Calling transferCollectibleOwnership...");
             const tx = await registry.transferCollectibleOwnership(c.rfid, newOwner);
             alert(`Transfer tx sent: ${tx.hash}`);
             await tx.wait();
@@ -502,7 +518,7 @@ export function AccountPage() {
 
             {hasProvider && address && wrongNetwork && (
                 <p style={{ color: "#f97373" }}>
-                    Wrong network selected in wallet. Please switch to Arbitrum Sepolia.
+                    Wrong network selected in wallet. Please switch to the correct network.
                 </p>
             )}
 

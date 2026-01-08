@@ -5,7 +5,7 @@ import "@openzeppelin-upgradeable/contracts/token/ERC721/extensions/ERC721URISto
 import "@openzeppelin-upgradeable/contracts/access/OwnableUpgradeable.sol";
 import {ICollectibleMarket} from "./interfaces/ICollectibleMarket.sol";
 
-/// @title CollectibleNFTV1
+/// @title CollectibleNFTV1 (improved with CEI pattern and better validation)
 /// @notice Upgradeable ERC721 with loyalty points and transfer guard while listed on the marketplace
 contract CollectibleNFTV1 is Initializable, ERC721URIStorageUpgradeable, OwnableUpgradeable {
     // v1 storage
@@ -65,16 +65,19 @@ contract CollectibleNFTV1 is Initializable, ERC721URIStorageUpgradeable, Ownable
     }
 
     function setRegistry(address _registryContract) external onlyOwner {
+        require(_registryContract != address(0), "Invalid registry");
         registryContract = _registryContract;
         emit RegistrySet(_registryContract);
     }
 
     function setMarketplace(address _marketplace) external onlyOwner {
+        require(_marketplace != address(0), "Invalid marketplace");
         marketplaceAddress = _marketplace;
         emit MarketplaceSet(_marketplace);
     }
 
     function setTierThresholds(uint256 _silver, uint256 _gold) external onlyOwner {
+        require(_gold >= _silver, "Gold must be >= silver");
         silverThreshold = _silver;
         goldThreshold = _gold;
         emit TierThresholdsUpdated(_silver, _gold);
@@ -96,14 +99,19 @@ contract CollectibleNFTV1 is Initializable, ERC721URIStorageUpgradeable, Ownable
         onlyAuthorised
         returns (uint256)
     {
+        require(recipient != address(0), "Invalid recipient");
+        
         uint256 tokenId = _nextTokenId;
         _nextTokenId++;
 
+        bytes32 rfidHash = keccak256(bytes(rfid));
+        require(rfidHashToTokenId[rfidHash] == 0, "RFID already exists");
+
+        // Store mapping BEFORE mint (CEI pattern)
+        rfidHashToTokenId[rfidHash] = tokenId;
+
         _safeMint(recipient, tokenId);
         _setTokenURI(tokenId, tokenURI);
-
-        bytes32 rfidHash = keccak256(bytes(rfid));
-        rfidHashToTokenId[rfidHash] = tokenId;
 
         // Events for indexers
         emit MintedNFT(tokenId, recipient);
@@ -115,21 +123,26 @@ contract CollectibleNFTV1 is Initializable, ERC721URIStorageUpgradeable, Ownable
     }
 
     function getTokenIdByRFID(string memory rfid) external view returns (uint256) {
-        return rfidHashToTokenId[keccak256(bytes(rfid))];
+        uint256 tokenId = rfidHashToTokenId[keccak256(bytes(rfid))];
+        require(tokenId != 0, "RFID not found");
+        return tokenId;
     }
 
     function getTokenIdByRFIDHash(bytes32 rfidHash) external view returns (uint256) {
-        return rfidHashToTokenId[rfidHash];
+        uint256 tokenId = rfidHashToTokenId[rfidHash];
+        require(tokenId != 0, "RFID hash not found");
+        return tokenId;
     }
 
     function burn(uint256 tokenId, string memory rfid) external onlyAuthorised {
+        // Verify RFID matches tokenId
+        bytes32 rfidHash = keccak256(bytes(rfid));
+        require(rfidHashToTokenId[rfidHash] == tokenId, "RFID mismatch");
+
         address owner_ = ownerOf(tokenId);
 
-        // Keep mapping tidy
-        bytes32 rfidHash = keccak256(bytes(rfid));
-        if (rfidHashToTokenId[rfidHash] == tokenId) {
-            delete rfidHashToTokenId[rfidHash];
-        }
+        // Delete mapping BEFORE burn (CEI pattern - prevents reentrancy issues)
+        delete rfidHashToTokenId[rfidHash];
 
         _burn(tokenId);
 
@@ -140,7 +153,9 @@ contract CollectibleNFTV1 is Initializable, ERC721URIStorageUpgradeable, Ownable
     }
 
     function addPoints(address user, uint256 points) internal {
-        loyaltyPoints[user] += points;
+        uint256 newPoints = loyaltyPoints[user] + points;
+        require(newPoints >= loyaltyPoints[user], "Points overflow");
+        loyaltyPoints[user] = newPoints;
         emit PointsAdded(user, points);
     }
 
@@ -160,6 +175,7 @@ contract CollectibleNFTV1 is Initializable, ERC721URIStorageUpgradeable, Ownable
         override
         returns (address from)
     {
+        // Only check if marketplace is configured
         if (marketplaceAddress != address(0) && auth != marketplaceAddress) {
             bool listed = ICollectibleMarket(marketplaceAddress).isListed(address(this), tokenId);
             require(!listed, "Collectible is listed: transfer blocked");

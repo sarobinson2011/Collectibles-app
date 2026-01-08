@@ -1,9 +1,11 @@
 // src/pages/HomePage.tsx
 
 import { useNavigate } from "react-router-dom";
+import { useWallet } from "../eth/wallet";
 
 export function HomePage() {
     const navigate = useNavigate();
+    const { address, hasProvider, connect, connecting } = useWallet();
 
     return (
         <div
@@ -50,20 +52,55 @@ export function HomePage() {
                 Explore, collect, trade, and verify unique items - powered by Web3.
             </p>
 
+            {/* CONNECT WALLET BUTTON (if not connected) */}
+            {hasProvider && !address && (
+                <button
+                    onClick={connect}
+                    disabled={connecting}
+                    style={{
+                        marginTop: "2rem",
+                        padding: "1rem 2rem",
+                        borderRadius: "0.5rem",
+                        backgroundColor: "#3b82f6",
+                        color: "white",
+                        border: "none",
+                        cursor: connecting ? "not-allowed" : "pointer",
+                        fontSize: "1.2rem",
+                        fontWeight: "bold",
+                        opacity: connecting ? 0.7 : 1,
+                        transition: "all 0.3s ease",
+                    }}
+                    onMouseEnter={(e) => {
+                        if (!connecting) {
+                            e.currentTarget.style.backgroundColor = "#2563eb";
+                            e.currentTarget.style.transform = "scale(1.05)";
+                        }
+                    }}
+                    onMouseLeave={(e) => {
+                        e.currentTarget.style.backgroundColor = "#3b82f6";
+                        e.currentTarget.style.transform = "scale(1)";
+                    }}
+                >
+                    {connecting ? "Connecting..." : "Connect Wallet"}
+                </button>
+            )}
+
             {/* BUTTON ROW */}
-            <div
-                style={{
-                    display: "flex",
-                    gap: "1rem",
-                    marginTop: "2rem",
-                    flexWrap: "wrap",
-                    justifyContent: "center",
-                }}
-            >
-                <HoverButton label="Explore Marketplace" onClick={() => navigate("/market")} />
-                <HoverButton label="My Collectibles" onClick={() => navigate("/mine")} />
-                <HoverButton label="Register Collectible" onClick={() => navigate("/admin")} />
-            </div>
+            {address && (
+                <div
+                    style={{
+                        display: "flex",
+                        gap: "1rem",
+                        marginTop: "2rem",
+                        flexWrap: "wrap",
+                        justifyContent: "center",
+                    }}
+                >
+                    <HoverButton label="Explore Marketplace" onClick={() => navigate("/market")} />
+                    <HoverButton label="My Collectibles" onClick={() => navigate("/mine")} />
+                    <HoverButton label="Register Collectible" onClick={() => navigate("/admin")} />
+                </div>
+            )}
 
             {/* Feature grid */}
             <div

@@ -1,5 +1,4 @@
 // src/App.tsx
-
 import { Routes, Route, NavLink, Link } from "react-router-dom";
 import { HomePage } from "./pages/HomePage";
 import { AllCollectiblesPage } from "./pages/AllCollectiblesPage";
@@ -9,11 +8,11 @@ import { AccountPage } from "./pages/AccountPage";
 import { AdminPage } from "./pages/AdminPage";
 import { CollectibleDetailsPage } from "./pages/CollectibleDetailsPage";
 import { useWallet } from "./eth/wallet";
-import { ADMIN_ADDRESS } from "./eth/config";
+import { ADMIN_ADDRESS, ACTIVE_NETWORK } from "./eth/config";
+import { NetworkWarning } from './components/NetworkWarning';
 
 function Layout() {
-  const { address, hasProvider, wrongNetwork } = useWallet();
-
+  const { address, hasProvider, wrongNetwork, currentNetworkName } = useWallet();
   const isAdmin =
     !!address &&
     !!ADMIN_ADDRESS &&
@@ -21,6 +20,9 @@ function Layout() {
 
   return (
     <div className="app-shell">
+      {/* ADD NetworkWarning at the top */}
+      <NetworkWarning />
+
       <header className="app-header">
         <div className="app-header-inner">
           <Link
@@ -30,7 +32,6 @@ function Layout() {
           >
             Collectibles Platform
           </Link>
-
           <nav className="app-nav">
             <NavLink to="/all" end>
               All
@@ -40,37 +41,50 @@ function Layout() {
             <NavLink to="/account">Account</NavLink>
             {isAdmin && <NavLink to="/admin">Admin</NavLink>}
           </nav>
-
-          <div style={{ fontSize: "0.75rem", color: "#9ca3af" }}>
-            {!hasProvider && "No wallet detected"}
-            {hasProvider && !address && "Wallet not connected"}
-            {hasProvider && address && (
-              <>
-                {wrongNetwork && (
-                  <span style={{ color: "#f97373", marginRight: "0.5rem" }}>
-                    Wrong network
-                  </span>
-                )}
-                <span className="wallet-address-strong">
-                  {address.slice(0, 6)}…{address.slice(-4)}
-                </span>
-              </>
+          <div style={{ fontSize: "0.75rem", color: "#9ca3af", display: "flex", gap: "1rem", alignItems: "center" }}>
+            {/* Network badge */}
+            {hasProvider && (
+              <span style={{
+                backgroundColor: wrongNetwork ? "#fef3c7" : "#d1fae5",
+                color: wrongNetwork ? "#92400e" : "#065f46",
+                padding: "0.25rem 0.75rem",
+                borderRadius: "9999px",
+                fontSize: "0.7rem",
+                fontWeight: "600"
+              }}>
+                {currentNetworkName || "No network"}
+              </span>
             )}
+
+            {/* Wallet status */}
+            <span>
+              {!hasProvider && "No wallet detected"}
+              {hasProvider && !address && "Wallet not connected"}
+              {hasProvider && address && (
+                <>
+                  {wrongNetwork && (
+                    <span style={{ color: "#f97373", marginRight: "0.5rem" }}>
+                      Wrong network
+                    </span>
+                  )}
+                  <span className="wallet-address-strong">
+                    {address.slice(0, 6)}…{address.slice(-4)}
+                  </span>
+                </>
+              )}
+            </span>
           </div>
         </div>
       </header>
-
       <main className="app-main">
         <Routes>
           {/* New home / landing page */}
           <Route path="/" element={<HomePage />} />
-
           {/* Existing views */}
           <Route path="/all" element={<AllCollectiblesPage />} />
           <Route path="/mine" element={<MyCollectiblesPage />} />
           <Route path="/market" element={<MarketplacePage />} />
           <Route path="/account" element={<AccountPage />} />
-
           {/* Protected admin route */}
           <Route
             path="/admin"
@@ -99,14 +113,12 @@ function Layout() {
               )
             }
           />
-
           {/* Collectible details by tokenId */}
           <Route path="/collectible/:tokenId" element={<CollectibleDetailsPage />} />
         </Routes>
       </main>
-
       <footer className="app-footer">
-        Indexed from Arbitrum Sepolia · Local backend at http://localhost:8080
+        Connected to {ACTIVE_NETWORK.name} · Backend at {import.meta.env.VITE_BACKEND_URL || 'http://localhost:8080'}
       </footer>
     </div>
   );

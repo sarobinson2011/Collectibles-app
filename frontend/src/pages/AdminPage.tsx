@@ -7,12 +7,35 @@ import { REGISTRY_ADDRESS } from "../eth/config";
 import { REGISTRY_ABI } from "../eth/abis";
 import { useWallet } from "../eth/wallet";
 import { uploadCollectibleImage } from "../api";
+import {
+    validateRFID,
+    validateAddress,
+    validateAuthenticityHash,
+    validateTokenURI,
+    validateImageFile,
+} from "../utils/validation";
 
 type FormState = {
     rfid: string;
     authenticityHash: string;
     initialOwner: string;
     tokenURI: string;
+};
+
+type FormErrors = {
+    rfid: string | null;
+    authenticityHash: string | null;
+    initialOwner: string | null;
+    tokenURI: string | null;
+    imageFile: string | null;
+};
+
+type TouchedFields = {
+    rfid: boolean;
+    authenticityHash: boolean;
+    initialOwner: boolean;
+    tokenURI: boolean;
+    imageFile: boolean;
 };
 
 async function getRegistryWithSignerFromProvider(
@@ -36,9 +59,27 @@ export function AdminPage() {
     });
     const [submitting, setSubmitting] = useState(false);
 
-    // image upload state
+    // Image upload state
     const [imageFile, setImageFile] = useState<File | null>(null);
     const [imageUploadError, setImageUploadError] = useState<string | null>(null);
+
+    // Validation state
+    const [errors, setErrors] = useState<FormErrors>({
+        rfid: null,
+        authenticityHash: null,
+        initialOwner: null,
+        tokenURI: null,
+        imageFile: null,
+    });
+
+    // Track which fields have been touched (for showing errors only after user interaction)
+    const [touched, setTouched] = useState<TouchedFields>({
+        rfid: false,
+        authenticityHash: false,
+        initialOwner: false,
+        tokenURI: false,
+        imageFile: false,
+    });
 
     // Prefill initialOwner from connected wallet if empty
     useEffect(() => {
@@ -48,6 +89,37 @@ export function AdminPage() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [address]);
 
+    // Real-time validation
+    useEffect(() => {
+        const newErrors: FormErrors = {
+            rfid: null,
+            authenticityHash: null,
+            initialOwner: null,
+            tokenURI: null,
+            imageFile: null,
+        };
+
+        const rfidResult = validateRFID(form.rfid);
+        if (!rfidResult.valid) newErrors.rfid = rfidResult.error || null;
+
+        const hashResult = validateAuthenticityHash(form.authenticityHash);
+        if (!hashResult.valid) newErrors.authenticityHash = hashResult.error || null;
+
+        const ownerResult = validateAddress(form.initialOwner);
+        if (!ownerResult.valid) newErrors.initialOwner = ownerResult.error || null;
+
+        const uriResult = validateTokenURI(form.tokenURI);
+        if (!uriResult.valid) newErrors.tokenURI = uriResult.error || null;
+
+        const imageResult = validateImageFile(imageFile);
+        if (!imageResult.valid) newErrors.imageFile = imageResult.error || null;
+
+        setErrors(newErrors);
+    }, [form, imageFile]);
+
+    // Check if form is valid
+    const isFormValid = !errors.rfid && !errors.authenticityHash && !errors.initialOwner && !errors.tokenURI && !errors.imageFile;
+
     function handleChange<K extends keyof FormState>(
         key: K,
         value: FormState[K],
@@ -55,8 +127,28 @@ export function AdminPage() {
         setForm((prev) => ({ ...prev, [key]: value }));
     }
 
+    function handleBlur(field: keyof TouchedFields) {
+        setTouched((prev) => ({ ...prev, [field]: true }));
+    }
+
     async function handleSubmit(e: FormEvent) {
         e.preventDefault();
+
+        // Mark all fields as touched
+        setTouched({
+            rfid: true,
+            authenticityHash: true,
+            initialOwner: true,
+            tokenURI: true,
+            imageFile: true,
+        });
+
+        // Don't submit if form is invalid
+        if (!isFormValid) {
+            alert("Please fix validation errors before submitting");
+            return;
+        }
+
         setSubmitting(true);
         setImageUploadError(null);
 
@@ -73,16 +165,6 @@ export function AdminPage() {
 
             const registry = await getRegistryWithSignerFromProvider(provider);
 
-            // Basic sanity checks; the contract will also validate
-            if (!form.rfid) throw new Error("RFID is required");
-            if (!form.authenticityHash.startsWith("0x")) {
-                throw new Error("Authenticity hash must be a 0x-prefixed bytes32");
-            }
-            if (!form.initialOwner.startsWith("0x")) {
-                throw new Error("Initial owner must be an 0x-prefixed address");
-            }
-            if (!form.tokenURI) throw new Error("tokenURI is required");
-
             // 1) On-chain registration
             const tx = await registry.registerCollectible(
                 form.rfid,
@@ -98,10 +180,11 @@ export function AdminPage() {
             // 2) Compute rfidHash exactly as the contract does (keccak256 of RFID string)
             const rfidHash = keccak256(toUtf8Bytes(form.rfid));
 
-            // 3) Upload image if one was selected
+            // 3) Upload image
             if (imageFile) {
                 try {
                     await uploadCollectibleImage(rfidHash, imageFile);
+                    alert("Image uploaded successfully!");
                 } catch (err: any) {
                     console.error("Image upload failed", err);
                     setImageUploadError(
@@ -110,7 +193,7 @@ export function AdminPage() {
                 }
             }
 
-            // 4) Optional: reset form (keep initialOwner prefilled)
+            // 4) Reset form (keep initialOwner prefilled)
             setForm({
                 rfid: "",
                 authenticityHash: "",
@@ -118,6 +201,13 @@ export function AdminPage() {
                 tokenURI: "",
             });
             setImageFile(null);
+            setTouched({
+                rfid: false,
+                authenticityHash: false,
+                initialOwner: false,
+                tokenURI: false,
+                imageFile: false,
+            });
         } catch (err: any) {
             console.error(err);
             alert(`Register failed: ${err?.message ?? String(err)}`);
@@ -146,88 +236,145 @@ export function AdminPage() {
 
             {hasProvider && address && wrongNetwork && (
                 <p style={{ color: "#f97373" }}>
-                    Wrong network selected in wallet. Please switch to Arbitrum Sepolia.
+                    Wrong network selected in wallet. Please switch to the correct network.
                 </p>
             )}
 
             <form onSubmit={handleSubmit} className="admin-form">
                 <div className="form-row">
                     <label>
-                        RFID
+                        RFID *
                         <input
                             type="text"
                             value={form.rfid}
                             onChange={(e) => handleChange("rfid", e.target.value)}
-                            placeholder="RFID-TEST-0002"
+                            onBlur={() => handleBlur("rfid")}
+                            placeholder="RFID-TEST-0069"
                             required
+                            style={{
+                                borderColor: touched.rfid && errors.rfid ? "#f97373" : undefined,
+                            }}
                         />
+                        {touched.rfid && errors.rfid && (
+                            <span style={{ color: "#f97373", fontSize: "0.85rem" }}>
+                                {errors.rfid}
+                            </span>
+                        )}
                     </label>
                 </div>
 
                 <div className="form-row">
                     <label>
-                        Authenticity hash (bytes32)
+                        Authenticity Hash (32 bytes) *
                         <input
                             type="text"
                             value={form.authenticityHash}
                             onChange={(e) =>
                                 handleChange("authenticityHash", e.target.value)
                             }
-                            placeholder="0x..."
+                            onBlur={() => handleBlur("authenticityHash")}
+                            placeholder="0x1234567890abcdef..."
                             required
+                            style={{
+                                borderColor: touched.authenticityHash && errors.authenticityHash ? "#f97373" : undefined,
+                            }}
                         />
+                        {touched.authenticityHash && errors.authenticityHash && (
+                            <span style={{ color: "#f97373", fontSize: "0.85rem" }}>
+                                {errors.authenticityHash}
+                            </span>
+                        )}
                     </label>
                 </div>
 
                 <div className="form-row">
                     <label>
-                        Initial owner
+                        Initial Owner (Ethereum Address) *
                         <input
                             type="text"
                             value={form.initialOwner}
                             onChange={(e) => handleChange("initialOwner", e.target.value)}
-                            placeholder="0xF8f8..."
+                            onBlur={() => handleBlur("initialOwner")}
+                            placeholder="0xF8f8269488f73fab3935555FCDdD6035699deE25"
                             required
+                            style={{
+                                borderColor: touched.initialOwner && errors.initialOwner ? "#f97373" : undefined,
+                            }}
                         />
+                        {touched.initialOwner && errors.initialOwner && (
+                            <span style={{ color: "#f97373", fontSize: "0.85rem" }}>
+                                {errors.initialOwner}
+                            </span>
+                        )}
                     </label>
                 </div>
 
                 <div className="form-row">
                     <label>
-                        tokenURI
+                        Token URI (leave empty to auto-generate)
                         <input
                             type="text"
                             value={form.tokenURI}
                             onChange={(e) => handleChange("tokenURI", e.target.value)}
-                            placeholder="ipfs://..."
-                            required
+                            onBlur={() => handleBlur("tokenURI")}
+                            placeholder="https://... or ipfs://... or leave empty"
+                            style={{
+                                borderColor: touched.tokenURI && errors.tokenURI ? "#f97373" : undefined,
+                            }}
                         />
+                        {touched.tokenURI && errors.tokenURI && (
+                            <span style={{ color: "#f97373", fontSize: "0.85rem" }}>
+                                {errors.tokenURI}
+                            </span>
+                        )}
                     </label>
                 </div>
 
                 <div className="form-row">
                     <label>
-                        Collectible image (optional)
+                        Collectible Image (JPEG only, max 5MB) *
                         <input
                             type="file"
-                            accept="image/*"
+                            accept="image/jpeg,.jpg,.jpeg"
                             onChange={(e) => {
                                 const file = e.target.files?.[0] ?? null;
                                 setImageFile(file);
                                 setImageUploadError(null);
+                                setTouched((prev) => ({ ...prev, imageFile: true }));
                             }}
                         />
+                        {touched.imageFile && errors.imageFile && (
+                            <span style={{ color: "#f97373", fontSize: "0.85rem" }}>
+                                {errors.imageFile}
+                            </span>
+                        )}
+                        {imageUploadError && (
+                            <span style={{ color: "#f97373", fontSize: "0.85rem" }}>
+                                {imageUploadError}
+                            </span>
+                        )}
+                        <span style={{ fontSize: "0.8rem", opacity: 0.7, display: "block", marginTop: "0.25rem" }}>
+                            Image will be automatically resized to 1024x1024
+                        </span>
                     </label>
-                    {imageUploadError && (
-                        <p style={{ color: "#f97373", fontSize: "0.8rem" }}>
-                            {imageUploadError}
-                        </p>
-                    )}
                 </div>
 
-                <button type="submit" disabled={submitting || !address || wrongNetwork}>
+                <button
+                    type="submit"
+                    disabled={submitting || !address || wrongNetwork || !isFormValid}
+                    style={{
+                        opacity: (!isFormValid || submitting || !address || wrongNetwork) ? 0.5 : 1,
+                        cursor: (!isFormValid || submitting || !address || wrongNetwork) ? "not-allowed" : "pointer"
+                    }}
+                >
                     {submitting ? "Submitting…" : "Register collectible"}
                 </button>
+
+                {!isFormValid && Object.values(touched).some(t => t) && (
+                    <p style={{ color: "#f97373", fontSize: "0.9rem", marginTop: "1rem" }}>
+                        Please fix all validation errors before submitting
+                    </p>
+                )}
             </form>
         </div>
     );

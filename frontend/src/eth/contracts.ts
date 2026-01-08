@@ -2,12 +2,8 @@
 
 import { Contract } from "ethers";
 import { NFT_ABI, MARKET_ABI, REGISTRY_ABI, USDC_ERC20_ABI } from "./abis";
-import { NFT_ADDRESS, MARKET_ADDRESS, REGISTRY_ADDRESS } from "./config";
+import { NFT_ADDRESS, MARKET_ADDRESS, REGISTRY_ADDRESS, USDC_ADDRESS } from "./config";
 import { useWallet } from "./wallet";
-
-// NOTE: using your mock USDC6 address from contracts/.env on Arbitrum Sepolia.
-// You can move this into config.ts / env later if you like.
-const USDC_ADDRESS = "0xAa1D42a9c87690789964AD6B6ec0e42FfeBda66F";
 
 export function useSignerContracts() {
     const { provider, hasProvider, wrongNetwork, address } = useWallet();

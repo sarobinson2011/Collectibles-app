@@ -188,17 +188,31 @@ export function MarketplacePage() {
             const tokenId = BigInt(l.tokenId);
             const priceRaw = BigInt(l.price); // already stored as 6-decimals raw integer
 
-            // 1) Approve USDC spending for this price
+            // 1) Approve USDC spending
+            console.log(`Step 1: Approving ${priceRaw} USDC for marketplace...`);
             const approveTx = await usdc.approve(market.target, priceRaw);
-            alert(`USDC approve tx sent: ${approveTx.hash}`);
+            console.log(`Approval tx hash: ${approveTx.hash}`);
             await approveTx.wait();
-            alert("USDC approve confirmed.");
+            console.log("Approval confirmed");
+
+            // DEBUG: Check if allowance was actually set
+            const allowance = await usdc.allowance(address, market.target);
+            console.log(`Allowance check: ${allowance} (expected: ${priceRaw})`);
+            console.log(`Buyer address: ${address}`);
+            console.log(`Market address: ${market.target}`);
+            console.log(`USDC address: ${usdc.target}`);
+
+            if (BigInt(allowance) < BigInt(priceRaw)) {
+                alert(`ERROR: Allowance is ${allowance} but needs to be ${priceRaw}. Something is wrong!`);
+                return;
+            }
 
             // 2) Purchase the collectible
-            const buyTx = await market.purchaseCollectible(NFT_ADDRESS, tokenId);
+            console.log(`Step 2: Purchasing collectible...`);
+            const buyTx = await market.purchaseCollectible(NFT_ADDRESS, tokenId, priceRaw);
             alert(`Purchase tx sent: ${buyTx.hash}`);
             await buyTx.wait();
-            alert("Purchase confirmed.");
+            alert("Purchase confirmed! The collectible is now yours.");
 
             // Refresh listings immediately
             await reloadListings();

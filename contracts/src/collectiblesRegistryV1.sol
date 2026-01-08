@@ -9,7 +9,7 @@ import {ICollectibleMarket} from "./interfaces/ICollectibleMarket.sol";
 import {ICollectibleNFTV1} from "./interfaces/ICollectibleNFTV1.sol";
 
 
-/// @title CollectibleRegistryV1 (refactored for indexable events)
+/// @title CollectibleRegistryV1 (improved with better validation)
 /// @notice Registry for authenticity data; ownership is taken from the ERC721 contract (no duplication)
 contract CollectibleRegistryV1 is Initializable, OwnableUpgradeable, ReentrancyGuardUpgradeable {
     /// @dev v1 storage layout (registry no longer stores owners)
@@ -99,6 +99,7 @@ contract CollectibleRegistryV1 is Initializable, OwnableUpgradeable, ReentrancyG
         address initialOwner,
         string memory tokenURI
     ) external onlyAdmin {
+        require(initialOwner != address(0), "Invalid initial owner");
         require(NFTContract != address(0), "NFT contract not set");
         bytes32 key = keccak256(bytes(rfid));
         require(!collectibles[key].exists, "RFID already registered");
@@ -126,15 +127,19 @@ contract CollectibleRegistryV1 is Initializable, OwnableUpgradeable, ReentrancyG
         return (rfid, collectibles[key].authenticityHash, currentOwner);
     }
 
-    /// @notice Owner-initiated transfer; blocked if listed on marketplace
+    /// @notice Owner-initiated transfer; blocked if listed on marketplace (when marketplace is set)
     function transferCollectibleOwnership(string memory rfid, address newOwner) external nonReentrant {
+        require(newOwner != address(0), "Invalid new owner");
         require(NFTContract != address(0), "NFT contract not set");
-        require(marketplaceAddress != address(0), "Marketplace not set");
 
         uint256 tokenId = ICollectibleNFTV1(NFTContract).getTokenIdByRFID(rfid);
         address oldOwner = IERC721(NFTContract).ownerOf(tokenId);
         require(msg.sender == oldOwner, "Not the owner");
-        require(!ICollectibleMarket(marketplaceAddress).isListed(NFTContract, tokenId), "Listed for sale");
+
+        // Only check marketplace if it's configured
+        if (marketplaceAddress != address(0)) {
+            require(!ICollectibleMarket(marketplaceAddress).isListed(NFTContract, tokenId), "Listed for sale");
+        }
 
         // Perform the transfer (frontend should ensure registry has approval)
         IERC721(NFTContract).safeTransferFrom(oldOwner, newOwner, tokenId);
@@ -146,7 +151,6 @@ contract CollectibleRegistryV1 is Initializable, OwnableUpgradeable, ReentrancyG
     /// @notice Burns the NFT and removes authenticity record; only the current owner can redeem
     function redeemCollectible(string memory rfid) external nonReentrant {
         require(NFTContract != address(0), "NFT contract not set");
-        require(marketplaceAddress != address(0), "Marketplace not set");
 
         bytes32 key = keccak256(bytes(rfid));
         require(collectibles[key].exists, "Collectible does not exist");
@@ -154,7 +158,11 @@ contract CollectibleRegistryV1 is Initializable, OwnableUpgradeable, ReentrancyG
         uint256 tokenId = ICollectibleNFTV1(NFTContract).getTokenIdByRFID(rfid);
         address currentOwner = IERC721(NFTContract).ownerOf(tokenId);
         require(msg.sender == currentOwner, "Not the owner");
-        require(!ICollectibleMarket(marketplaceAddress).isListed(NFTContract, tokenId), "Listed for sale");
+
+        // Only check marketplace if it's configured
+        if (marketplaceAddress != address(0)) {
+            require(!ICollectibleMarket(marketplaceAddress).isListed(NFTContract, tokenId), "Listed for sale");
+        }
 
         // Burn first; revert preserves registry state if burn fails
         ICollectibleNFTV1(NFTContract).burn(tokenId, rfid);

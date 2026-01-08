@@ -6,6 +6,7 @@ import { join } from "path";
 import fs from "fs/promises";
 import fsSync from "fs";
 import multer from "multer";
+import sharp from "sharp";
 import { env } from "../config/env.js";
 import { logger } from "../infra/logger.js";
 import {
@@ -315,12 +316,12 @@ export function startHttpServer(): void {
 
     /**
      * POST /admin/collectibles/:rfidHash/image
-     * Accepts a single image file (field name "file") and links it to the collectible.
+     * Accepts a single image file (field name "file"), resizes to 1024x1024, and links it to the collectible.
      */
     app.post(
         "/admin/collectibles/:rfidHash/image",
         upload.single("file"),
-        (req: MulterRequest, res: Response) => {
+        async (req: MulterRequest, res: Response) => {
             try {
                 const rfidHash = (req.params.rfidHash || "").trim();
                 if (!rfidHash) {
@@ -333,24 +334,50 @@ export function startHttpServer(): void {
                     return;
                 }
 
-                const relPath = `/images/${req.file.filename}`;
+                // Original uploaded file path (from multer)
+                const originalPath = req.file.path;
+
+                // New filename for resized image
+                const resizedFilename = `${req.file.filename}-1024.jpg`;
+                const resizedPath = join(IMAGES_DIR, resizedFilename);
+
+                // Resize image to 1024x1024 using sharp
+                // - Resizes and crops to fill the square (cover mode)
+                // - Converts to JPEG with 90% quality
+                // - Strips metadata
+                await sharp(originalPath)
+                    .resize(1024, 1024, {
+                        fit: 'cover',      // Crop to fill the square
+                        position: 'centre' // Center the crop
+                    })
+                    .jpeg({ quality: 90 })
+                    .toFile(resizedPath);
+
+                // Delete the original uploaded file (we only keep the resized version)
+                await fs.unlink(originalPath);
+
+                // Generate URL for resized image
+                const relPath = `/images/${resizedFilename}`;
                 const fullUrl = `${PUBLIC_BASE_URL}${relPath}`;
 
-                // For now we use the same URL for all sizes.
+                // Store image info in database
                 upsertCollectibleImageDb({
                     rfidHash: rfidHash.toLowerCase(),
                     originalUrl: fullUrl,
                     detailUrl: fullUrl,
                     cardUrl: fullUrl,
                     thumbUrl: fullUrl,
-                    width: 0,
-                    height: 0,
+                    width: 1024,
+                    height: 1024,
                     createdAt: Date.now(),
                 });
+
+                logger.info({ rfidHash, resizedFilename }, "Image uploaded and resized to 1024x1024");
 
                 res.json({
                     rfidHash,
                     url: fullUrl,
+                    dimensions: { width: 1024, height: 1024 }
                 });
             } catch (err) {
                 logger.error(err, "POST /admin/collectibles/:rfidHash/image failed");

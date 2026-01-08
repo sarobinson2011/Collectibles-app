@@ -17,7 +17,7 @@ import { startHttpServer } from "./http/server.js";
 import { applyEventToState, type IndexedEvent } from "./domain/state.js";
 
 // ---------- Providers ----------
-const ws = new WebSocketProvider(env.RPC_WS_URL, env.CHAIN_ID);
+const ws = env.RPC_WS_URL ? new WebSocketProvider(env.RPC_WS_URL, env.CHAIN_ID) : null;
 const http = new JsonRpcProvider(env.RPC_HTTP_URL, env.CHAIN_ID);
 
 // ---------- JSONL sinks (per-contract + raw + combined) ----------
@@ -244,23 +244,27 @@ async function main() {
     // 2) Start HTTP API (should keep running even if RPC is flaky)
     startHttpServer();
 
-    // 3) Attach WS listener for live events
-    const filter: Filter = {
-        address: [env.REGISTRY_ADDRESS, env.NFT_ADDRESS, env.MARKET_ADDRESS],
-    };
+    // 3) Attach WS listener for live events (only if WebSocket available)
+    if (ws) {
+        const filter: Filter = {
+            address: [env.REGISTRY_ADDRESS, env.NFT_ADDRESS, env.MARKET_ADDRESS],
+        };
 
-    ws.on(filter, (log: Log) => {
-        void handleLog(log);
-    });
+        ws.on(filter, (log: Log) => {
+            void handleLog(log);
+        });
 
-    // WS resilience: log on close instead of killing the process
-    // @ts-expect-error _ws is not typed by ethers; present in Node runtime
-    ws._ws?.addEventListener?.("close", () => {
-        logger.warn(
-            "WS closed. Live event listening stopped, HTTP server still running.",
-        );
-        // If you want to implement reconnect logic later, you can do it here.
-    });
+        // WS resilience: log on close instead of killing the process
+        // @ts-expect-error _ws is not typed by ethers; present in Node runtime
+        ws._ws?.addEventListener?.("close", () => {
+            logger.warn(
+                "WS closed. Live event listening stopped, HTTP server still running.",
+            );
+        });
+        logger.info("WebSocket listener attached for live events");
+    } else {
+        logger.info("No WebSocket - using HTTP polling only");
+    }
 
     // 4) Try to log the latest block, but DO NOT crash if RPC is down / rate-limited
     const latest = await getLatestBlockWithBackoff(http);
@@ -270,6 +274,40 @@ async function main() {
         logger.warn(
             "Could not fetch latest block after retries; continuing without HTTP chain height. WS events and HTTP API will still run.",
         );
+    }
+
+    // 5) If no WebSocket, start polling for new blocks
+    if (!ws) {
+        let lastProcessedBlock = latest || 0;
+
+        setInterval(async () => {
+            try {
+                const currentBlock = await http.getBlockNumber();
+
+                if (currentBlock > lastProcessedBlock) {
+                    const fromBlock = lastProcessedBlock + 1;
+                    const toBlock = currentBlock;
+
+                    logger.info(`Polling: Fetching logs from block ${fromBlock} to ${toBlock}`);
+
+                    const logs = await http.getLogs({
+                        address: [env.REGISTRY_ADDRESS, env.NFT_ADDRESS, env.MARKET_ADDRESS],
+                        fromBlock,
+                        toBlock,
+                    });
+
+                    for (const log of logs) {
+                        await handleLog(log);
+                    }
+
+                    lastProcessedBlock = currentBlock;
+                }
+            } catch (error) {
+                logger.error({ error }, "Polling error");
+            }
+        }, env.POLL_INTERVAL);
+
+        logger.info(`HTTP polling started (interval: ${env.POLL_INTERVAL}ms)`);
     }
 }
 

@@ -37,7 +37,7 @@ export const NFT_ABI = [
     "event TierThresholdsUpdated(uint256 silver, uint256 gold)",
 ];
 
-// Marketplace functions we’ll call
+// Marketplace functions we'll call
 export const MARKET_ABI = [
     // listCollectible(address nft, uint256 tokenId, uint256 price)
     "function listCollectible(address nft, uint256 tokenId, uint256 price)",
@@ -48,8 +48,8 @@ export const MARKET_ABI = [
     // amendListing(address nft, uint256 tokenId, uint256 newPrice)
     "function amendListing(address nft, uint256 tokenId, uint256 newPrice)",
 
-    // purchaseCollectible(address nft, uint256 tokenId)
-    "function purchaseCollectible(address nft, uint256 tokenId)",
+    // purchaseCollectible(address nft, uint256 tokenId, uint256 maxPrice) - with front-running protection
+    "function purchaseCollectible(address nft, uint256 tokenId, uint256 maxPrice)",
 ];
 
 // Minimal ERC20 ABI for USDC (or your mock USDC)

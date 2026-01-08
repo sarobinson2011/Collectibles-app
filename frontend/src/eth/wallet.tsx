@@ -8,7 +8,7 @@ import {
     type ReactNode,
 } from "react";
 import { BrowserProvider } from "ethers";
-import { CHAIN_ID } from "./config";
+import { ACTIVE_NETWORK, getNetworkByChainId, isCorrectNetwork } from "./config";
 
 type WalletContextValue = {
     address: string | null;
@@ -17,7 +17,10 @@ type WalletContextValue = {
     connecting: boolean;
     hasProvider: boolean;
     wrongNetwork: boolean;
+    currentNetworkName: string | null;
+    expectedNetworkName: string;
     connect: () => Promise<void>;
+    switchToCorrectNetwork: () => Promise<void>;
 };
 
 const WalletContext = createContext<WalletContextValue | undefined>(undefined);
@@ -127,7 +130,51 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         }
     }
 
-    const wrongNetwork = chainId !== null && chainId !== CHAIN_ID;
+    // NEW: Switch to the correct network automatically
+    async function switchToCorrectNetwork() {
+        const eth = window.ethereum;
+        if (!eth) {
+            alert("No wallet found");
+            return;
+        }
+
+        try {
+            // Try to switch to the correct network
+            await eth.request({
+                method: "wallet_switchEthereumChain",
+                params: [{ chainId: `0x${ACTIVE_NETWORK.chainId.toString(16)}` }],
+            });
+        } catch (switchError: any) {
+            // This error code indicates that the chain has not been added to MetaMask
+            if (switchError.code === 4902) {
+                try {
+                    await eth.request({
+                        method: "wallet_addEthereumChain",
+                        params: [
+                            {
+                                chainId: `0x${ACTIVE_NETWORK.chainId.toString(16)}`,
+                                chainName: ACTIVE_NETWORK.name,
+                                rpcUrls: [ACTIVE_NETWORK.rpcUrl],
+                                nativeCurrency: ACTIVE_NETWORK.nativeCurrency,
+                                blockExplorerUrls: [ACTIVE_NETWORK.blockExplorer],
+                            },
+                        ],
+                    });
+                } catch (addError) {
+                    console.error("Failed to add network", addError);
+                    alert("Failed to add network to wallet");
+                }
+            } else {
+                console.error("Failed to switch network", switchError);
+            }
+        }
+    }
+
+    const wrongNetwork = chainId !== null && !isCorrectNetwork(chainId);
+
+    // Get human-readable network names
+    const currentNetworkName = chainId ? getNetworkByChainId(chainId)?.name ?? "Unknown Network" : null;
+    const expectedNetworkName = ACTIVE_NETWORK.name;
 
     const value: WalletContextValue = {
         address,
@@ -136,7 +183,10 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         connecting,
         hasProvider,
         wrongNetwork,
+        currentNetworkName,
+        expectedNetworkName,
         connect,
+        switchToCorrectNetwork,
     };
 
     return (

@@ -9,7 +9,7 @@ import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 
-/// @title CollectibleMarketV1
+/// @title CollectibleMarketV1 (improved with payment token setter and emergency functions)
 /// @notice Simple fixed-price marketplace with ERC20 payments and fee, plus helpful views and pause
 contract CollectibleMarketV1 is Initializable, ReentrancyGuardUpgradeable, PausableUpgradeable, OwnableUpgradeable {
     struct Listing {
@@ -32,6 +32,7 @@ contract CollectibleMarketV1 is Initializable, ReentrancyGuardUpgradeable, Pausa
     // =========================
     event PaymentTokenSet(address indexed paymentToken);
     event FeeConfigUpdated(address indexed feeRecipient, uint256 feeBps);
+    event EmergencyWithdrawal(address indexed token, address indexed to, uint256 amount);
 
     event CollectibleListed(address indexed nft, uint256 indexed tokenId, address indexed seller, uint256 price);
     event CollectibleCanceled(address indexed nft, uint256 indexed tokenId);
@@ -60,6 +61,34 @@ contract CollectibleMarketV1 is Initializable, ReentrancyGuardUpgradeable, Pausa
         emit FeeConfigUpdated(_feeRecipient, feeBps);
     }
 
+    // =====================
+    // Admin configuration
+    // =====================
+
+    /// @notice Update the payment token (critical for multi-network deployments)
+    function setPaymentToken(address _paymentToken) external onlyOwner {
+        require(_paymentToken != address(0), "Invalid payment token");
+        paymentToken = IERC20(_paymentToken);
+        emit PaymentTokenSet(_paymentToken);
+    }
+
+    /// @notice Update fee configuration
+    function setFeeConfig(address _feeRecipient, uint256 _feeBps) external onlyOwner {
+        require(_feeRecipient != address(0), "Invalid fee recipient");
+        require(_feeBps <= MAX_BPS, "Fee too high");
+
+        feeRecipient = _feeRecipient;
+        feeBps = _feeBps;
+        emit FeeConfigUpdated(_feeRecipient, _feeBps);
+    }
+
+    /// @notice Emergency token recovery (in case tokens get stuck)
+    function emergencyWithdraw(address token, uint256 amount) external onlyOwner {
+        require(token != address(0), "Invalid token");
+        require(IERC20(token).transfer(owner(), amount), "Transfer failed");
+        emit EmergencyWithdrawal(token, owner(), amount);
+    }
+
     // Pausable controls (OZ emits Paused(address)/Unpaused(address))
     function pause() external onlyOwner {
         _pause();
@@ -68,6 +97,10 @@ contract CollectibleMarketV1 is Initializable, ReentrancyGuardUpgradeable, Pausa
     function unpause() external onlyOwner {
         _unpause();
     }
+
+    // =====================
+    // Marketplace functions
+    // =====================
 
     function listCollectible(address nft, uint256 tokenId, uint256 price) external whenNotPaused nonReentrant {
         require(price > 0, "Price must be greater than zero");
@@ -105,6 +138,40 @@ contract CollectibleMarketV1 is Initializable, ReentrancyGuardUpgradeable, Pausa
         emit CollectiblePriceUpdated(nft, tokenId, newPrice);
     }
 
+    /// @notice Purchase a listed collectible with front-running protection
+    /// @param maxPrice Maximum price buyer is willing to pay (protects against seller raising price)
+    function purchaseCollectible(address nft, uint256 tokenId, uint256 maxPrice) external whenNotPaused nonReentrant {
+        Listing storage listing = listings[nft][tokenId];
+        require(listing.isListed, "Not listed");
+
+        uint256 price = listing.price;
+        require(price <= maxPrice, "Price increased beyond max");
+        
+        address seller = listing.seller;
+
+        // Ensure the listed seller still owns the token
+        require(IERC721(nft).ownerOf(tokenId) == seller, "Owner changed");
+
+        uint256 feeAmount = (price * feeBps) / MAX_BPS;
+        uint256 sellerAmount = price - feeAmount;
+
+        require(paymentToken.balanceOf(msg.sender) >= price, "Insufficient balance");
+        require(paymentToken.allowance(msg.sender, address(this)) >= price, "Insufficient allowance");
+
+        // Delist BEFORE transfers (CEI pattern - prevents reentrancy)
+        listing.isListed = false;
+
+        // Pull funds; entire tx reverts if anything below fails (atomic)
+        require(paymentToken.transferFrom(msg.sender, feeRecipient, feeAmount), "Fee transfer failed");
+        require(paymentToken.transferFrom(msg.sender, seller, sellerAmount), "Seller payment failed");
+
+        // Move the NFT
+        IERC721(nft).safeTransferFrom(seller, msg.sender, tokenId);
+
+        emit CollectiblePurchased(nft, tokenId, seller, msg.sender, price);
+    }
+
+    /// @notice Backward compatibility: purchase without maxPrice check
     function purchaseCollectible(address nft, uint256 tokenId) external whenNotPaused nonReentrant {
         Listing storage listing = listings[nft][tokenId];
         require(listing.isListed, "Not listed");
@@ -121,25 +188,22 @@ contract CollectibleMarketV1 is Initializable, ReentrancyGuardUpgradeable, Pausa
         require(paymentToken.balanceOf(msg.sender) >= price, "Insufficient balance");
         require(paymentToken.allowance(msg.sender, address(this)) >= price, "Insufficient allowance");
 
-        // Pull funds first; entire tx reverts if anything below fails (atomic)
+        // Delist BEFORE transfers (CEI pattern)
+        listing.isListed = false;
+
+        // Pull funds; entire tx reverts if anything below fails (atomic)
         require(paymentToken.transferFrom(msg.sender, feeRecipient, feeAmount), "Fee transfer failed");
         require(paymentToken.transferFrom(msg.sender, seller, sellerAmount), "Seller payment failed");
 
         // Move the NFT
         IERC721(nft).safeTransferFrom(seller, msg.sender, tokenId);
 
-        listing.isListed = false;
         emit CollectiblePurchased(nft, tokenId, seller, msg.sender, price);
     }
 
-    function setFeeConfig(address _feeRecipient, uint256 _feeBps) external onlyOwner {
-        require(_feeRecipient != address(0), "Invalid fee recipient");
-        require(_feeBps <= MAX_BPS, "Fee too high"); // tighten if you want a lower cap
-
-        feeRecipient = _feeRecipient;
-        feeBps = _feeBps;
-        emit FeeConfigUpdated(_feeRecipient, _feeBps);
-    }
+    // =====================
+    // View functions
+    // =====================
 
     function isListed(address nft, uint256 tokenId) external view returns (bool) {
         return listings[nft][tokenId].isListed;
