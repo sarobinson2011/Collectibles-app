@@ -13,27 +13,6 @@ Market Proxy (main):    0x5f4F63164ffbD889fe8D1572C277509b1FA01B40
 USDC Mock:              0x8BC104732AF20584058D8eF68a4C448698fFB282
 
 
-# Manual verification - addresses (Aurora Testnet)
-
-Registry:
-
-Implementation: 0x50E1ec5D186b7eD5EcfD7118beb0947a5269FbBb
-ProxyAdmin: 0x4B22976045D4b0e176a6a63E0C125C0949b52672
-Proxy: 0xEb3f30Cae7085fdE13eEac6a9A178FE403310c7d
-
-NFT:
-
-Implementation: 0x37b2A374AE213Fc64c7D90BB9c93228b1C30619C
-ProxyAdmin: 0x6E5ac5e1e75960047B7Bb227E0BEB3b603c4FF0C
-Proxy: 0xd9F7874cCc13695b0B0EF8a61d9B87F53cf65541
-
-Market:
-
-Implementation: 0x1E0e3Ba0078df85EB1FC6AACe55356324Ad4F994
-ProxyAdmin: 0x57916903421E151D89fB3e4A14aC78cA2A679cFD
-Proxy: 0x5f4F63164ffbD889fe8D1572C277509b1FA01B40
-
-
 ## Deployment Commands (Aurora Testnet)
 
 Note: Manually paste deployed proxy addresses into contracts/wire_contracts_aurora.sh before wiring
